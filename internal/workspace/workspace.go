@@ -3,12 +3,22 @@ package workspace
 import (
 	"bufio"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+)
+
+type GitType int
+
+const (
+	none GitType = iota
+	bare
+	worktree
+	detatched
 )
 
 type Workspace struct {
@@ -19,6 +29,9 @@ type Workspace struct {
 	IsWorktree   bool
 	ActiveInTmux bool
 	ModifiedAt   time.Time
+	GitType      GitType
+	Branch       string
+	Head         string
 }
 
 func Scan(roots []string, activeSessions map[string]bool, activePaths map[string]bool) ([]Workspace, error) {
@@ -54,7 +67,7 @@ func scanRoot(root string, activeSessions map[string]bool, activePaths map[strin
 
 	workspaces := make([]Workspace, 0, len(entries))
 	for _, entry := range entries {
-		if !entry.IsDir() || entry.Name()[0] == '.' {
+		if !entry.IsDir() {
 			continue
 		}
 
@@ -64,20 +77,65 @@ func scanRoot(root string, activeSessions map[string]bool, activePaths map[strin
 			continue
 		}
 
+		cmd := exec.Command("git", "rev-parse", "--git-dir")
+		cmd.Dir = path
+		_, err = cmd.Output()
+		isGitDir := false
+		if err != nil {
+		} else {
+			isGitDir = true
+		}
+
 		parent := Workspace{
 			Name:         entry.Name(),
 			Path:         path,
 			Root:         root,
 			ActiveInTmux: activeSessions[entry.Name()] || activePaths[filepath.Clean(path)],
 			ModifiedAt:   info.ModTime(),
+			GitType:      none,
 		}
-		workspaces = append(workspaces, parent)
+		if !isGitDir {
+			workspaces = append(workspaces, parent)
 
-		for _, wt := range scanWorktrees(parent, activeSessions, activePaths) {
-			workspaces = append(workspaces, wt)
+			// s, _ := json.MarshalIndent(parent, "	", "  ")
+			// fmt.Printf("Parent	%s\n", string(s))
+		} else {
+			// fmt.Printf("Checking %s\n", path)
+			for _, wt := range scanWorktrees(parent, activeSessions, activePaths) {
+				workspaces = append(workspaces, wt)
+				// s, _ := json.MarshalIndent(wt, "	", "  ")
+				// fmt.Printf("Wt	%s\n", string(s))
+			}
 		}
+
 	}
+
+	// fmt.Println("Workspaces")
+	// for _, wp := range workspaces {
+	// 	s, _ := json.MarshalIndent(wp, "", "  ")
+	// 	fmt.Println(string(s))
+	// }
 	return workspaces, nil
+}
+
+// worktree /home/kait/Documents/dev/worktree
+// bare
+//
+// worktree /home/kait/Documents/dev/worktree/hi
+// HEAD 4079aa8f8ce1765cfcee16f8137bec929f51dddf
+// branch refs/heads/hi
+//
+// worktree /home/kait/Documents/dev/worktree/main
+// HEAD cb0ae40467f1cf8ea17ead338ed35086b5919ca5
+// branch refs/heads/main
+
+type WorktreeResp struct {
+	Path       string
+	Kind       GitType
+	Head       string
+	Branch     string
+	IsWorktree bool
+	ModTime    time.Time
 }
 
 func scanWorktrees(parent Workspace, activeSessions map[string]bool, activePaths map[string]bool) []Workspace {
@@ -86,34 +144,97 @@ func scanWorktrees(parent Workspace, activeSessions map[string]bool, activePaths
 		return nil
 	}
 
-	var worktrees []Workspace
 	scanner := bufio.NewScanner(strings.NewReader(string(out)))
+	var response []WorktreeResp
+	inRep := false
+	var curWorktree WorktreeResp
 	for scanner.Scan() {
 		line := scanner.Text()
-		if !strings.HasPrefix(line, "worktree ") {
+		if strings.HasPrefix(line, "worktree ") && !inRep {
+			inRep = true
+			curWorktree = WorktreeResp{}
+		} else if !inRep {
 			continue
 		}
 
-		path := strings.TrimPrefix(line, "worktree ")
-		if path == parent.Path {
-			continue
+		if after, ok := strings.CutPrefix(line, "worktree "); ok {
+			path := after
+			info, err := os.Stat(path)
+			if err != nil || !info.IsDir() {
+				continue
+			}
+			curWorktree.Path = path
+			curWorktree.ModTime = info.ModTime()
+			cmd1 := exec.Command("git", "rev-parse", "--git-dir")
+			cmd1.Dir = path
+			cmd2 := exec.Command("git", "rev-parse", "--git-common-dir")
+			cmd2.Dir = path
+			gitDir, err1 := cmd1.CombinedOutput()
+			gitCommonDir, err2 := cmd2.CombinedOutput()
+			if err1 != nil || err2 != nil {
+				continue
+			}
+			if string(gitDir) != string(gitCommonDir) {
+				curWorktree.IsWorktree = true
+			} else {
+				curWorktree.IsWorktree = false
+			}
+		} else if after, ok := strings.CutPrefix(line, "HEAD "); ok {
+			curWorktree.Head = after
+		} else if line == "bare" {
+			curWorktree.Kind = bare
+		} else if after, ok := strings.CutPrefix(line, "branch "); ok {
+			curWorktree.Branch = after
+			curWorktree.Kind = worktree
+		} else if line == "detached" {
+			curWorktree.Kind = detatched
+		} else if line == "" {
+			// End of section
+			response = append(response, curWorktree)
+			curWorktree = WorktreeResp{}
+			inRep = false
 		}
-		info, err := os.Stat(path)
-		if err != nil || !info.IsDir() {
-			continue
-		}
+	}
+	if inRep {
+		response = append(response, curWorktree)
+		curWorktree = WorktreeResp{}
+		inRep = false
+	}
+	fmt.Printf("thing: %+v\n", response)
 
-		name := filepath.Base(path)
+	var worktrees []Workspace
+	for _, wt := range response {
+		name := filepath.Base(wt.Path)
+		root := wt.Path
+		if wt.IsWorktree {
+			root = parent.Path
+		}
 		worktrees = append(worktrees, Workspace{
 			Name:         name,
-			Path:         path,
-			Root:         parent.Root,
+			Path:         wt.Path,
+			Root:         root,
 			ParentName:   parent.Name,
-			IsWorktree:   true,
-			ActiveInTmux: activeSessions[name] || activePaths[filepath.Clean(path)],
-			ModifiedAt:   info.ModTime(),
+			IsWorktree:   wt.IsWorktree,
+			ActiveInTmux: activeSessions[name] || activePaths[filepath.Clean(wt.Path)],
+			ModifiedAt:   wt.ModTime,
+			GitType:      wt.Kind,
+			Branch:       wt.Branch,
+			Head:         wt.Head,
 		})
 	}
+
+	// os.Exit(0)
+	// name := filepath.Base(path)
+	// worktrees = append(worktrees, Workspace{
+	// 	Name:         name,
+	// 	Path:         path,
+	// 	Root:         parent.Root,
+	// 	ParentName:   parent.Name,
+	// 	IsWorktree:   true,
+	// 	ActiveInTmux: activeSessions[name] || activePaths[filepath.Clean(path)],
+	// 	ModifiedAt:   info.ModTime(),
+	// })
+
 	return worktrees
 }
 

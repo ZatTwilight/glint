@@ -33,8 +33,7 @@ type Model struct {
 type itemKind int
 
 const (
-	kindHeader itemKind = iota
-	kindWorkspace
+	kindWorkspace itemKind = iota
 	kindSession
 )
 
@@ -44,6 +43,7 @@ type item struct {
 	kind        itemKind
 	sessionName string
 	path        string
+	workspace   workspace.Workspace
 }
 
 func (i item) Title() string       { return i.title }
@@ -77,18 +77,37 @@ func New(state State, refresh RefreshFunc) Model {
 			desc = sessionSummary(session)
 		}
 
-		items = append(items, item{title: title, desc: desc, kind: kindWorkspace, sessionName: sessionNameForWorkspace(ws, session, active), path: ws.Path})
+		items = append(items, item{
+			title: title,
+			desc: desc,
+			kind: kindWorkspace,
+			sessionName: sessionNameForWorkspace(ws, session, active),
+			path: ws.Path,
+			workspace: ws,
+		})
 	}
 
-	other := otherSessions(state.Multiplexer.Sessions, workspaceSessions)
-	for i := len(other) - 1; i >= 0; i-- {
-		session := other[i]
-		row := item{title: "● " + session.Name, desc: sessionSummary(session), kind: kindSession, sessionName: session.Name, path: session.Path}
-		items = append(items[:1], append([]list.Item{row}, items[1:]...)...)
-	}
 
-	delegate := list.NewDefaultDelegate()
-	theme.ApplyListTheme(&delegate, state.Theme)
+
+	// for _, it := range items {
+	// 	i, ok := it.(item)
+	// 	if !ok {
+	// 		continue
+	// 	}
+	// 	// s, _ := json.MarshalIndent(i.workspace, "", "  ")
+	// 	// fmt.Println(string(s))
+	// }
+
+	// os.Exit(0)
+
+	// other := otherSessions(state.Multiplexer.Sessions, workspaceSessions)
+	// for i := len(other) - 1; i >= 0; i-- {
+	// 	session := other[i]
+	// 	row := item{title: "● " + session.Name, desc: sessionSummary(session), kind: kindSession, sessionName: session.Name, path: session.Path}
+	// 	items = append(items[:1], append([]list.Item{row}, items[1:]...)...)
+	// }
+
+	delegate := newItemDelegate(state.Theme)
 	l := list.New(items, delegate, 34, 24)
 	l.SetShowTitle(false)
 	l.SetShowStatusBar(false)
@@ -172,7 +191,7 @@ func (m Model) View() tea.View {
 
 func (m Model) activateSelected() (tea.Model, tea.Cmd) {
 	selected, ok := m.list.SelectedItem().(item)
-	if !ok || selected.kind == kindHeader {
+	if !ok {
 		m.status = "Pick a project or session"
 		return m, nil
 	}
