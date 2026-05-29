@@ -39,8 +39,14 @@ type itemKind int
 
 const (
 	kindWorkspace itemKind = iota
-	kindSession
+	kindAgent
 )
+
+type visibleItem struct {
+	Kind       itemKind
+	Workspace  workspace.Workspace
+	AgentIndex int
+}
 
 type itemSpan struct {
 	start int
@@ -83,6 +89,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "enter":
 			return m.activateSelected()
+		case " ", "tab", "c":
+			m.toggleSelected()
+			return m, nil
 		case "up", "k":
 			m.moveSelection(-1)
 			return m, nil
@@ -95,7 +104,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ensureSelectedVisible()
 			return m, nil
 		case "end":
-			m.selected = max(0, len(m.state.Workspaces)-1)
+			m.selected = max(0, len(m.visibleItems())-1)
 			m.renderContent()
 			m.ensureSelectedVisible()
 			return m, nil
@@ -110,18 +119,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tickMsg:
 		return m, tea.Batch(m.doRefresh(), refreshTick())
 	case refreshMsg:
-		// if msg.err != nil {
-		// 	m.status = fmt.Sprintf("Refresh failed: %v", msg.err)
-		// 	return m, nil
-		// }
-		// idx := m.selected
-		// m.state = msg.state
-		// m.rebuildItems()
-		// if len(m.items) > 0 {
-		// 	m.selected = min(idx, len(m.items)-1)
-		// 	m.renderContent()
-		// 	m.ensureSelectedVisible()
-		// }
+		if msg.err != nil {
+			m.status = fmt.Sprintf("Refresh failed: %v", msg.err)
+			return m, nil
+		}
+		idx := m.selected
+		m.state = msg.state
+		m.rebuildItems()
+		if len(m.visibleItems()) > 0 {
+			m.selected = min(idx, len(m.visibleItems())-1)
+			m.renderContent()
+			m.ensureSelectedVisible()
+		}
 	}
 
 	var cmd tea.Cmd
@@ -135,11 +144,11 @@ func refreshTick() tea.Cmd {
 
 func (m Model) doRefresh() tea.Cmd {
 	return func() tea.Msg {
-		return refreshMsg{state: m.state}
-		// if m.refresh == nil {
-		// }
-		// state, err := m.refresh()
-		// return refreshMsg{state: state, err: err}
+		if m.refresh == nil {
+			return refreshMsg{state: m.state}
+		}
+		state, err := m.refresh()
+		return refreshMsg{state: state, err: err}
 	}
 }
 
@@ -151,9 +160,23 @@ func (m *Model) rebuildItems() {
 }
 
 func (m Model) getItems() []workspace.Workspace {
-	items := util.Filter(m.state.Workspaces, func(w workspace.Workspace) bool {
+	return util.Filter(m.state.Workspaces, func(w workspace.Workspace) bool {
 		return w.GitType != 1
 	})
+}
+
+func (m Model) visibleItems() []visibleItem {
+	workspaces := m.getItems()
+	items := make([]visibleItem, 0, len(workspaces))
+	for _, ws := range workspaces {
+		items = append(items, visibleItem{Kind: kindWorkspace, Workspace: ws, AgentIndex: -1})
+		if len(ws.Agents) == 0 || m.renderer.IsCollapsed(ws.Path) {
+			continue
+		}
+		for idx := range ws.Agents {
+			items = append(items, visibleItem{Kind: kindAgent, Workspace: ws, AgentIndex: idx})
+		}
+	}
 	return items
 }
 
@@ -164,28 +187,56 @@ func (m Model) viewportInnerWidth() int {
 func (m *Model) renderContent() {
 	lines := []string{}
 	m.spans = make([]itemSpan, 0, len(m.state.Workspaces))
-	items := m.getItems()
+	items := m.visibleItems()
 	for idx, item := range items {
 		start := len(lines)
-		rendered := m.renderer.Render(item, idx == m.selected, m.viewportInnerWidth())
+		rendered := m.renderer.RenderVisible(item, idx == m.selected, m.viewportInnerWidth())
 		lines = append(lines, strings.Split(rendered, "\n")...)
 		end := len(lines)
 		m.spans = append(m.spans, itemSpan{start: start, end: end})
 
-		// Dynamic per-item spacing can also live here.
-		if idx != len(m.state.Workspaces)-1 {
-			lines = append(lines, "")
+		if idx != len(items)-1 {
+			next := items[idx+1]
+			if item.Kind == kindWorkspace && next.Kind == kindWorkspace {
+				lines = append(lines, "")
+			}
+			if item.Kind == kindAgent && next.Kind == kindWorkspace {
+				lines = append(lines, "")
+			}
 		}
 	}
+	lines = append(lines, "", "", "")
 
 	m.viewport.SetContent(strings.Join(lines, "\n"))
 }
 
 func (m *Model) moveSelection(delta int) {
-	if len(m.state.Workspaces) == 0 {
+	items := m.visibleItems()
+	if len(items) == 0 {
 		return
 	}
-	m.selected = min(max(0, m.selected+delta), len(m.state.Workspaces)-1)
+	m.selected = min(max(0, m.selected+delta), len(items)-1)
+	m.renderContent()
+	m.ensureSelectedVisible()
+}
+
+func (m *Model) toggleSelected() {
+	items := m.visibleItems()
+	if len(items) == 0 || m.selected < 0 || m.selected >= len(items) {
+		return
+	}
+	item := items[m.selected]
+	if item.Kind == kindAgent {
+		item = visibleItem{Kind: kindWorkspace, Workspace: item.Workspace}
+	}
+	if len(item.Workspace.Agents) == 0 {
+		m.status = "No agents in " + item.Workspace.Name
+		return
+	}
+	m.renderer.collapsed[item.Workspace.Path] = !m.renderer.collapsed[item.Workspace.Path]
+	if m.selected >= len(m.visibleItems()) {
+		m.selected = max(0, len(m.visibleItems())-1)
+	}
 	m.renderContent()
 	m.ensureSelectedVisible()
 }
@@ -213,7 +264,7 @@ func (m Model) viewHeader() string {
 }
 
 func (m Model) viewFooter() string {
-	content := fmt.Sprintf("status: %s\n↑/↓ move · scroll · Enter switch/create · q quit", m.status)
+	content := fmt.Sprintf("status: %s\n↑/↓ move · c/space collapse · Enter switch/create · q quit", m.status)
 	return m.styles.Help.Render(content)
 }
 
@@ -226,32 +277,45 @@ func (m Model) View() tea.View {
 }
 
 func (m Model) activateSelected() (tea.Model, tea.Cmd) {
-	items := m.getItems()
+	items := m.visibleItems()
 	if len(items) == 0 || m.selected < 0 || m.selected >= len(items) {
-		m.status = "Pick a project or session"
+		m.status = "Pick a project"
 		return m, nil
 	}
-	selected := items[m.selected]
-	session := m.sessionFromWorkspace(selected)
-	var sessionName string
+	item := items[m.selected]
+	if item.Kind == kindAgent {
+		ag := item.Workspace.Agents[item.AgentIndex]
+		if ag.Pane != "" {
+			if err := multiplexer.SwitchPane(m.state.Multiplexer.Kind, ag.Session, ag.Window, ag.Pane); err != nil {
+				m.status = fmt.Sprintf("Switch failed: %v", err)
+				return m, nil
+			}
+			m.status = fmt.Sprintf("Switched to %s in %s:%s", ag.Name, ag.Session, ag.Pane)
+			return m, nil
+		}
+		return m.activateWorkspace(item.Workspace)
+	}
+	return m.activateWorkspace(item.Workspace)
+}
 
-	// Doesn't currently exist as a session
-	if session == nil && !m.state.Multiplexer.SessionNames()[selected.Name] {
+func (m Model) activateWorkspace(selected workspace.Workspace) (tea.Model, tea.Cmd) {
+	session := m.sessionFromWorkspace(selected)
+	sessionName := selected.Name
+
+	if session != nil {
+		sessionName = session.Name
+	} else if !m.state.Multiplexer.SessionNames()[selected.Name] {
 		if err := multiplexer.NewSession(m.state.Multiplexer.Kind, selected.Name, selected.Path); err != nil {
 			m.status = fmt.Sprintf("Create failed: %v", err)
 			return m, nil
 		}
-		sessionName = selected.Name
-	} else {
-		sessionName = session.Name
 	}
 
-	// Session exists so switch to it.
 	if err := multiplexer.SwitchSession(m.state.Multiplexer.Kind, sessionName); err != nil {
 		m.status = fmt.Sprintf("Switch failed: %v", err)
 		return m, nil
 	}
-	m.status = fmt.Sprintf("Switched to %+v %+v %+v", selected, m.state.Multiplexer.SessionNames()[selected.Name], session)
+	m.status = fmt.Sprintf("Switched to %s", sessionName)
 	return m, nil
 }
 
@@ -310,9 +374,15 @@ func sessionSummary(session multiplexer.Session) string {
 }
 
 func relativeTime(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
 	d := time.Since(t)
+	if d < 0 {
+		d = 0
+	}
 	if d < time.Minute {
-		return "just now"
+		return "now"
 	}
 	if d < time.Hour {
 		return fmt.Sprintf("%dm ago", int(d.Minutes()))

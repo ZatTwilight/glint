@@ -53,6 +53,52 @@ Themes:
 - `catppuccin`
 - `kanagawa`
 
+## Agent hooks
+
+Glint can record reliable agent lifecycle events from shell hooks, plugins, or extensions:
+
+```bash
+# Mark an agent turn as running. JSON on stdin is optional but useful.
+printf '{"session_id":"abc","cwd":"%s","prompt":"Refactor auth"}' "$PWD" \
+  | glint hook pi prompt-submit
+
+# Mark that same turn as complete.
+printf '{"session_id":"abc","cwd":"%s","last_assistant_message":"Done"}' "$PWD" \
+  | glint hook pi stop
+
+# Inspect recent recorded lifecycle events.
+glint events 20
+```
+
+Install the Pi extension after building/installing `glint`:
+
+```bash
+# Option A: install glint on PATH, then install the Pi extension
+go install ./cmd/glint
+glint hooks install pi
+
+# Option B: use an explicit binary path
+go build -o ./bin/glint ./cmd/glint
+./bin/glint hooks install pi --bin "$PWD/bin/glint"
+```
+
+Then restart Pi or run `/reload` inside Pi.
+
+Events are written to:
+
+```text
+~/.local/state/glint/agents/events.jsonl
+~/.local/state/glint/agents/latest.json
+```
+
+Supported status events include `session-start`, `prompt-submit`, `stop`, `session-end`, `notification`, `permissionrequest`, `busy`, `idle`, and `error`. Pass explicit values when needed:
+
+```bash
+glint hook claude notification --workspace "$PWD" --session claude-123 --status needs_attention --task "Approve shell command"
+```
+
+Hook status is merged with tmux pane detection and wins over activity-based guesses.
+
 ## Current prototype
 
 - Detects tmux / zellij / plain terminal
@@ -64,12 +110,17 @@ Themes:
 - Creates missing tmux sessions for selected projects, then switches to them
 - Shows tmux sessions outside configured workspace roots in the same general list
 - Shows session status: attached/detached, window count, activity age, and path basename
+- Detects live per-workspace agent panes in tmux for Pi, Claude, Codex, Aider, OpenCode, and Goose
+- Detects historical Pi, Codex, and Claude sessions from local JSONL transcript stores
+- Shows agent status with `●` running, `◌` idle, and `…` thinking based on pane activity or hook events
+- Expands/collapses workspace agent entries with `c`, `space`, or `tab`
 - Refreshes every 2 seconds so closed/opened sessions update live
 - Provides a filterable terminal UI
 
 ## Next ideas
 
 - Open selected workspace in a tmux/zellij pane/session
-- Track configured agent commands like Claude, Codex, OpenCode, Pi
-- Add config file for workspace roots and agent launchers
+- Add `glint hooks install <agent>` helpers for Pi, Claude, Codex, and OpenCode
+- Launch configured agent commands like Claude, Codex, OpenCode, Pi
+- Add config file for agent commands and launchers
 - Add zellij adapter

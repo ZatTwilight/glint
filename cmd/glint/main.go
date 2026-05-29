@@ -13,6 +13,29 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "hook":
+			if err := runHook(os.Args[2:]); err != nil {
+				fmt.Fprintf(os.Stderr, "glint hook: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		case "events":
+			if err := runEvents(os.Args[2:]); err != nil {
+				fmt.Fprintf(os.Stderr, "glint events: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		case "hooks":
+			if err := runHooks(os.Args[2:]); err != nil {
+				fmt.Fprintf(os.Stderr, "glint hooks: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+	}
+
 	cfg, err := config.Load()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "load config: %v\n", err)

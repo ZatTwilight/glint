@@ -92,6 +92,28 @@ func SwitchSession(kind Kind, name string) error {
 	}
 }
 
+func SwitchPane(kind Kind, session, window, pane string) error {
+	switch kind {
+	case Tmux:
+		if err := exec.Command("tmux", "switch-client", "-t", session).Run(); err != nil {
+			return err
+		}
+		if window != "" {
+			if err := exec.Command("tmux", "select-window", "-t", window).Run(); err != nil {
+				return err
+			}
+		}
+		if pane != "" {
+			return exec.Command("tmux", "select-pane", "-t", pane).Run()
+		}
+		return nil
+	case Zellij:
+		return fmt.Errorf("zellij pane switching is not implemented yet")
+	default:
+		return fmt.Errorf("not running inside a supported multiplexer")
+	}
+}
+
 func NewSession(kind Kind, name, path string) error {
 	switch kind {
 	case Tmux:

@@ -3,13 +3,14 @@ package workspace
 import (
 	"bufio"
 	"errors"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/ZatTwilight/glint/internal/agent"
 )
 
 type GitType int
@@ -32,6 +33,7 @@ type Workspace struct {
 	GitType      GitType
 	Branch       string
 	Head         string
+	Agents       []agent.Agent
 }
 
 func Scan(roots []string, activeSessions map[string]bool, activePaths map[string]bool) ([]Workspace, error) {
@@ -95,6 +97,7 @@ func scanRoot(root string, activeSessions map[string]bool, activePaths map[strin
 			GitType:      none,
 		}
 		if !isGitDir {
+			parent.Agents = agent.ScanWorkspace(parent.Name, parent.Path)
 			workspaces = append(workspaces, parent)
 
 			// s, _ := json.MarshalIndent(parent, "	", "  ")
@@ -200,8 +203,6 @@ func scanWorktrees(parent Workspace, activeSessions map[string]bool, activePaths
 		curWorktree = WorktreeResp{}
 		inRep = false
 	}
-	fmt.Printf("thing: %+v\n", response)
-
 	var worktrees []Workspace
 	for _, wt := range response {
 		name := filepath.Base(wt.Path)
@@ -220,6 +221,7 @@ func scanWorktrees(parent Workspace, activeSessions map[string]bool, activePaths
 			GitType:      wt.Kind,
 			Branch:       wt.Branch,
 			Head:         wt.Head,
+			Agents:       agent.ScanWorkspace(name, wt.Path),
 		})
 	}
 
@@ -242,8 +244,9 @@ func Sort(workspaces []Workspace) {
 	groupModified := map[string]time.Time{}
 	for _, ws := range workspaces {
 		group := groupName(ws)
-		if ws.ModifiedAt.After(groupModified[group]) {
-			groupModified[group] = ws.ModifiedAt
+		modified := effectiveModifiedAt(ws)
+		if modified.After(groupModified[group]) {
+			groupModified[group] = modified
 		}
 	}
 
@@ -263,11 +266,23 @@ func Sort(workspaces []Workspace) {
 		if left.IsWorktree != right.IsWorktree {
 			return !left.IsWorktree
 		}
-		if !left.ModifiedAt.Equal(right.ModifiedAt) {
-			return left.ModifiedAt.After(right.ModifiedAt)
+		leftModified := effectiveModifiedAt(left)
+		rightModified := effectiveModifiedAt(right)
+		if !leftModified.Equal(rightModified) {
+			return leftModified.After(rightModified)
 		}
 		return left.Name < right.Name
 	})
+}
+
+func effectiveModifiedAt(ws Workspace) time.Time {
+	modified := ws.ModifiedAt
+	for _, agent := range ws.Agents {
+		if agent.Activity.After(modified) {
+			modified = agent.Activity
+		}
+	}
+	return modified
 }
 
 func groupName(ws Workspace) string {
