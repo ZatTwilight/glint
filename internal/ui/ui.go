@@ -8,9 +8,11 @@ import (
 
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/kait/agentbar/internal/multiplexer"
 	"github.com/kait/agentbar/internal/theme"
 	"github.com/kait/agentbar/internal/workspace"
+	"github.com/kait/agentbar/internal/util"
 )
 
 type State struct {
@@ -25,7 +27,6 @@ type RefreshFunc func() (State, error)
 type Model struct {
 	state    State
 	viewport viewport.Model
-	items    []item
 	selected int
 	status   string
 	refresh  RefreshFunc
@@ -41,15 +42,6 @@ const (
 	kindSession
 )
 
-type item struct {
-	title       string
-	desc        string
-	kind        itemKind
-	sessionName string
-	path        string
-	workspace   workspace.Workspace
-}
-
 type itemSpan struct {
 	start int
 	end   int
@@ -59,12 +51,13 @@ func New(state State, refresh RefreshFunc) Model {
 	styles := theme.NewStyles(state.Theme)
 	vp := viewport.New()
 	vp.MouseWheelEnabled = true
-	vp.MouseWheelDelta = 3
+	vp.MouseWheelDelta = 1
+	vp.Style = styles.Body
 
 	m := Model{
 		state:    state,
 		viewport: vp,
-		status:   "Enter switches or creates tmux sessions",
+		status:   "Enter switches or creates sessions",
 		refresh:  refresh,
 		styles:   styles,
 		renderer: newItemRenderer(state.Theme),
@@ -102,30 +95,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ensureSelectedVisible()
 			return m, nil
 		case "end":
-			m.selected = max(0, len(m.items)-1)
+			m.selected = max(0, len(m.state.Workspaces)-1)
 			m.renderContent()
 			m.ensureSelectedVisible()
 			return m, nil
 		}
 	case tea.WindowSizeMsg:
 		m.viewport.SetWidth(max(20, msg.Width-4))
-		m.viewport.SetHeight(max(10, msg.Height-6))
+		headerHeight := lipgloss.Height(m.viewHeader())
+		footerHeight := lipgloss.Height(m.viewHeader())
+		verticalMarginHeight := headerHeight + footerHeight
+		m.viewport.SetHeight(msg.Height-verticalMarginHeight)
 		m.renderContent()
 	case tickMsg:
 		return m, tea.Batch(m.doRefresh(), refreshTick())
 	case refreshMsg:
-		if msg.err != nil {
-			m.status = fmt.Sprintf("Refresh failed: %v", msg.err)
-			return m, nil
-		}
-		idx := m.selected
-		m.state = msg.state
-		m.rebuildItems()
-		if len(m.items) > 0 {
-			m.selected = min(idx, len(m.items)-1)
-			m.renderContent()
-			m.ensureSelectedVisible()
-		}
+		// if msg.err != nil {
+		// 	m.status = fmt.Sprintf("Refresh failed: %v", msg.err)
+		// 	return m, nil
+		// }
+		// idx := m.selected
+		// m.state = msg.state
+		// m.rebuildItems()
+		// if len(m.items) > 0 {
+		// 	m.selected = min(idx, len(m.items)-1)
+		// 	m.renderContent()
+		// 	m.ensureSelectedVisible()
+		// }
 	}
 
 	var cmd tea.Cmd
@@ -148,69 +144,36 @@ func (m Model) doRefresh() tea.Cmd {
 }
 
 func (m *Model) rebuildItems() {
-	m.items = buildItems(m.state)
-	if m.selected >= len(m.items) {
-		m.selected = max(0, len(m.items)-1)
+	if m.selected >= len(m.state.Workspaces) {
+		m.selected = max(0, len(m.state.Workspaces)-1)
 	}
 	m.renderContent()
 }
 
-func buildItems(state State) []item {
-	sessionsByName := state.Multiplexer.SessionByName()
-	sessionsByPath := state.Multiplexer.SessionByPath()
-	workspaceSessions := make(map[string]bool, len(state.Workspaces))
-	items := make([]item, 0, len(state.Workspaces)+len(state.Multiplexer.Sessions))
-
-	for _, ws := range state.Workspaces {
-		title := "▸ " + ws.Name
-		desc := ws.Path
-		if ws.IsWorktree {
-			title = "  └ " + ws.Name
-		}
-
-		session, active := sessionsByName[ws.Name]
-		if !active {
-			session, active = sessionsByPath[filepath.Clean(ws.Path)]
-		}
-		if active {
-			workspaceSessions[session.Name] = true
-			title = "● " + ws.Name
-			if ws.IsWorktree {
-				title = "  └● " + ws.Name
-			}
-			desc = sessionSummary(session)
-		}
-
-		items = append(items, item{
-			title:       title,
-			desc:        desc,
-			kind:        kindWorkspace,
-			sessionName: sessionNameForWorkspace(ws, session, active),
-			path:        ws.Path,
-			workspace:   ws,
-		})
-	}
-
-	for _, session := range otherSessions(state.Multiplexer.Sessions, workspaceSessions) {
-		items = append([]item{{title: "● " + session.Name, desc: sessionSummary(session), kind: kindSession, sessionName: session.Name, path: session.Path}}, items...)
-	}
-
+func (m Model) getItems() []workspace.Workspace {
+	items := util.Filter(m.state.Workspaces, func(w workspace.Workspace) bool {
+		return w.GitType != 1
+	})
 	return items
+}
+
+func (m Model) viewportInnerWidth() int {
+    return max(0, m.viewport.Width()-m.viewport.Style.GetHorizontalFrameSize())
 }
 
 func (m *Model) renderContent() {
 	lines := []string{}
-	m.spans = make([]itemSpan, 0, len(m.items))
-
-	for idx, item := range m.items {
+	m.spans = make([]itemSpan, 0, len(m.state.Workspaces))
+	items := m.getItems()
+	for idx, item := range items {
 		start := len(lines)
-		rendered := m.renderer.Render(item, idx == m.selected)
+		rendered := m.renderer.Render(item, idx == m.selected, m.viewportInnerWidth())
 		lines = append(lines, strings.Split(rendered, "\n")...)
 		end := len(lines)
 		m.spans = append(m.spans, itemSpan{start: start, end: end})
 
 		// Dynamic per-item spacing can also live here.
-		if idx != len(m.items)-1 {
+		if idx != len(m.state.Workspaces)-1 {
 			lines = append(lines, "")
 		}
 	}
@@ -219,10 +182,10 @@ func (m *Model) renderContent() {
 }
 
 func (m *Model) moveSelection(delta int) {
-	if len(m.items) == 0 {
+	if len(m.state.Workspaces) == 0 {
 		return
 	}
-	m.selected = min(max(0, m.selected+delta), len(m.items)-1)
+	m.selected = min(max(0, m.selected+delta), len(m.state.Workspaces)-1)
 	m.renderContent()
 	m.ensureSelectedVisible()
 }
@@ -243,36 +206,68 @@ func (m *Model) ensureSelectedVisible() {
 	}
 }
 
-func (m Model) View() tea.View {
+func (m Model) viewHeader() string {
 	badge := m.styles.Badge.Render(strings.ToUpper(string(m.state.Multiplexer.Kind)))
 	header := fmt.Sprintf("%s  %d projects", badge, len(m.state.Workspaces))
-	footer := m.styles.Help.Render("↑/↓ move · scroll · Enter switch/create · q quit")
+	return m.styles.Header.Render(header)
+}
+
+func (m Model) viewFooter() string {
+	content := fmt.Sprintf("status: %s\n↑/↓ move · scroll · Enter switch/create · q quit", m.status)
+	return m.styles.Help.Render(content)
+}
+
+func (m Model) View() tea.View {
 	body := m.viewport.View()
-	v := tea.NewView(m.styles.Panel.Render(header + "\n" + body + "\n" + m.styles.Muted.Render(m.status) + "\n" + footer))
+	v := tea.NewView(m.viewHeader() + body + m.viewFooter())
 	v.AltScreen = true
+	v.MouseMode = tea.MouseModeCellMotion
 	return v
 }
 
 func (m Model) activateSelected() (tea.Model, tea.Cmd) {
-	if len(m.items) == 0 || m.selected < 0 || m.selected >= len(m.items) {
+	items := m.getItems()
+	if len(items) == 0 || m.selected < 0 || m.selected >= len(items) {
 		m.status = "Pick a project or session"
 		return m, nil
 	}
-	selected := m.items[m.selected]
+	selected := items[m.selected]
+	session := m.sessionFromWorkspace(selected)
+	var sessionName string
 
-	if selected.kind == kindWorkspace && !m.state.Multiplexer.SessionNames()[selected.sessionName] {
-		if err := multiplexer.NewSession(m.state.Multiplexer.Kind, selected.sessionName, selected.path); err != nil {
+	// Doesn't currently exist as a session
+	if session == nil && !m.state.Multiplexer.SessionNames()[selected.Name] {
+		if err := multiplexer.NewSession(m.state.Multiplexer.Kind, selected.Name, selected.Path); err != nil {
 			m.status = fmt.Sprintf("Create failed: %v", err)
 			return m, nil
 		}
+		sessionName = selected.Name
+	} else {
+		sessionName = session.Name
 	}
 
-	if err := multiplexer.SwitchSession(m.state.Multiplexer.Kind, selected.sessionName); err != nil {
+	// Session exists so switch to it.
+	if err := multiplexer.SwitchSession(m.state.Multiplexer.Kind, sessionName); err != nil {
 		m.status = fmt.Sprintf("Switch failed: %v", err)
 		return m, nil
 	}
-	m.status = fmt.Sprintf("Switched to %s", selected.sessionName)
+	m.status = fmt.Sprintf("Switched to %+v %+v %+v", selected, m.state.Multiplexer.SessionNames()[selected.Name], session)
 	return m, nil
+}
+
+func (m Model) sessionFromWorkspace(ws workspace.Workspace) *multiplexer.Session {
+	sessionNames := m.state.Multiplexer.SessionByName()
+	sessionPaths := m.state.Multiplexer.SessionByPath()
+
+	session, active := sessionNames[ws.Name]
+	if !active {
+		session, active = sessionPaths[filepath.Clean(ws.Path)]
+	}
+	if !active {
+		return nil
+	} else {
+		return &session
+	}
 }
 
 func sessionNameForWorkspace(ws workspace.Workspace, session multiplexer.Session, active bool) string {

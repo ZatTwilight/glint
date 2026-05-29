@@ -5,6 +5,8 @@ import (
 
 	"charm.land/lipgloss/v2"
 	"github.com/kait/agentbar/internal/theme"
+	"github.com/kait/agentbar/internal/util"
+	"github.com/kait/agentbar/internal/workspace"
 )
 
 // itemRenderer is the small rendering layer for each row in the sidebar.
@@ -41,13 +43,20 @@ func newItemRenderer(t theme.Theme) itemRenderer {
 	}
 }
 
-func (r itemRenderer) Render(i item, selected bool) string {
-	titleTxt := i.title
-	descTxt := i.desc
+func (r itemRenderer) Render(i workspace.Workspace, selected bool, width int) string {
+	descWidth := width - r.styles.Description.GetHorizontalFrameSize()
+	titleTxt := i.Name
 
-	if i.workspace.GitType != 0 {
-		titleTxt = "󰊢 " + titleTxt
-	}
+	pathParts := strings.Split(i.Path, "/")
+	shortPath := strings.Join(pathParts[len(pathParts)-2:], "/")
+	descTxt := util.RightAlignLine(shortPath, relativeTime(i.ModifiedAt), descWidth)
+
+	// if i.GitType != 0 {
+	// 	titleTxt = "󰊢  " + titleTxt
+	// }
+	// if i.ActiveInTmux {
+	// 	titleTxt = "  " + i.Name
+	// }
 
 	title := r.styles.Title.Render(titleTxt)
 	desc := r.styles.Description.Render(descTxt)
@@ -62,8 +71,8 @@ func (r itemRenderer) Render(i item, selected bool) string {
 	// Add/remove lines here per item without changing any global Height().
 	// For example:
 	//
-	// if i.workspace.IsWorktree {
-	// 	lines = append(lines, r.styles.Description.Render("worktree: "+i.path))
+	// if i.IsWorktree {
+	// 	lines = append(lines, r.styles.Description.Render("worktree: "+i.Path))
 	// }
 
 	return strings.Join(lines, "\n")
