@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"charm.land/bubbles/v2/list"
+	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"github.com/kait/agentbar/internal/multiplexer"
 	"github.com/kait/agentbar/internal/theme"
@@ -23,11 +23,15 @@ type State struct {
 type RefreshFunc func() (State, error)
 
 type Model struct {
-	state   State
-	list    list.Model
-	status  string
-	refresh RefreshFunc
-	styles  theme.Styles
+	state    State
+	viewport viewport.Model
+	items    []item
+	selected int
+	status   string
+	refresh  RefreshFunc
+	styles   theme.Styles
+	renderer itemRenderer
+	spans    []itemSpan
 }
 
 type itemKind int
@@ -46,16 +50,116 @@ type item struct {
 	workspace   workspace.Workspace
 }
 
-func (i item) Title() string       { return i.title }
-func (i item) Description() string { return i.desc }
-func (i item) FilterValue() string { return i.title }
+type itemSpan struct {
+	start int
+	end   int
+}
 
 func New(state State, refresh RefreshFunc) Model {
 	styles := theme.NewStyles(state.Theme)
+	vp := viewport.New()
+	vp.MouseWheelEnabled = true
+	vp.MouseWheelDelta = 3
+
+	m := Model{
+		state:    state,
+		viewport: vp,
+		status:   "Enter switches or creates tmux sessions",
+		refresh:  refresh,
+		styles:   styles,
+		renderer: newItemRenderer(state.Theme),
+	}
+	m.rebuildItems()
+	return m
+}
+
+func (m Model) Init() tea.Cmd { return refreshTick() }
+
+type refreshMsg struct {
+	state State
+	err   error
+}
+
+type tickMsg time.Time
+
+func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "q", "ctrl+c", "esc":
+			return m, tea.Quit
+		case "enter":
+			return m.activateSelected()
+		case "up", "k":
+			m.moveSelection(-1)
+			return m, nil
+		case "down", "j":
+			m.moveSelection(1)
+			return m, nil
+		case "home":
+			m.selected = 0
+			m.renderContent()
+			m.ensureSelectedVisible()
+			return m, nil
+		case "end":
+			m.selected = max(0, len(m.items)-1)
+			m.renderContent()
+			m.ensureSelectedVisible()
+			return m, nil
+		}
+	case tea.WindowSizeMsg:
+		m.viewport.SetWidth(max(20, msg.Width-4))
+		m.viewport.SetHeight(max(10, msg.Height-6))
+		m.renderContent()
+	case tickMsg:
+		return m, tea.Batch(m.doRefresh(), refreshTick())
+	case refreshMsg:
+		if msg.err != nil {
+			m.status = fmt.Sprintf("Refresh failed: %v", msg.err)
+			return m, nil
+		}
+		idx := m.selected
+		m.state = msg.state
+		m.rebuildItems()
+		if len(m.items) > 0 {
+			m.selected = min(idx, len(m.items)-1)
+			m.renderContent()
+			m.ensureSelectedVisible()
+		}
+	}
+
+	var cmd tea.Cmd
+	m.viewport, cmd = m.viewport.Update(msg)
+	return m, cmd
+}
+
+func refreshTick() tea.Cmd {
+	return tea.Tick(2*time.Second, func(t time.Time) tea.Msg { return tickMsg(t) })
+}
+
+func (m Model) doRefresh() tea.Cmd {
+	return func() tea.Msg {
+		return refreshMsg{state: m.state}
+		// if m.refresh == nil {
+		// }
+		// state, err := m.refresh()
+		// return refreshMsg{state: state, err: err}
+	}
+}
+
+func (m *Model) rebuildItems() {
+	m.items = buildItems(m.state)
+	if m.selected >= len(m.items) {
+		m.selected = max(0, len(m.items)-1)
+	}
+	m.renderContent()
+}
+
+func buildItems(state State) []item {
 	sessionsByName := state.Multiplexer.SessionByName()
 	sessionsByPath := state.Multiplexer.SessionByPath()
 	workspaceSessions := make(map[string]bool, len(state.Workspaces))
-	items := make([]list.Item, 0, len(state.Workspaces)+len(state.Multiplexer.Sessions)+1)
+	items := make([]item, 0, len(state.Workspaces)+len(state.Multiplexer.Sessions))
 
 	for _, ws := range state.Workspaces {
 		title := "▸ " + ws.Name
@@ -78,123 +182,83 @@ func New(state State, refresh RefreshFunc) Model {
 		}
 
 		items = append(items, item{
-			title: title,
-			desc: desc,
-			kind: kindWorkspace,
+			title:       title,
+			desc:        desc,
+			kind:        kindWorkspace,
 			sessionName: sessionNameForWorkspace(ws, session, active),
-			path: ws.Path,
-			workspace: ws,
+			path:        ws.Path,
+			workspace:   ws,
 		})
 	}
 
+	for _, session := range otherSessions(state.Multiplexer.Sessions, workspaceSessions) {
+		items = append([]item{{title: "● " + session.Name, desc: sessionSummary(session), kind: kindSession, sessionName: session.Name, path: session.Path}}, items...)
+	}
 
-
-	// for _, it := range items {
-	// 	i, ok := it.(item)
-	// 	if !ok {
-	// 		continue
-	// 	}
-	// 	// s, _ := json.MarshalIndent(i.workspace, "", "  ")
-	// 	// fmt.Println(string(s))
-	// }
-
-	// os.Exit(0)
-
-	// other := otherSessions(state.Multiplexer.Sessions, workspaceSessions)
-	// for i := len(other) - 1; i >= 0; i-- {
-	// 	session := other[i]
-	// 	row := item{title: "● " + session.Name, desc: sessionSummary(session), kind: kindSession, sessionName: session.Name, path: session.Path}
-	// 	items = append(items[:1], append([]list.Item{row}, items[1:]...)...)
-	// }
-
-	delegate := newItemDelegate(state.Theme)
-	l := list.New(items, delegate, 34, 24)
-	l.SetShowTitle(false)
-	l.SetShowStatusBar(false)
-	l.SetFilteringEnabled(true)
-	l.SetShowHelp(false)
-
-	return Model{state: state, list: l, status: "Enter switches or creates tmux sessions", refresh: refresh, styles: styles}
+	return items
 }
 
-func (m Model) Init() tea.Cmd { return refreshTick() }
+func (m *Model) renderContent() {
+	lines := []string{}
+	m.spans = make([]itemSpan, 0, len(m.items))
 
-type refreshMsg struct {
-	state State
-	err   error
-}
+	for idx, item := range m.items {
+		start := len(lines)
+		rendered := m.renderer.Render(item, idx == m.selected)
+		lines = append(lines, strings.Split(rendered, "\n")...)
+		end := len(lines)
+		m.spans = append(m.spans, itemSpan{start: start, end: end})
 
-type tickMsg time.Time
-
-func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		switch msg.String() {
-		case "q", "ctrl+c", "esc":
-			if m.list.FilterState() != list.Unfiltered {
-				m.list.SetFilterState(list.Unfiltered)
-				return m, nil
-			}
-			return m, tea.Quit
-		case "enter":
-			return m.activateSelected()
-		}
-	case tea.WindowSizeMsg:
-		m.list.SetSize(max(20, msg.Width-4), max(10, msg.Height-6))
-	case tickMsg:
-		return m, tea.Batch(m.doRefresh(), refreshTick())
-	case refreshMsg:
-		if msg.err != nil {
-			m.status = fmt.Sprintf("Refresh failed: %v", msg.err)
-			return m, nil
-		}
-		idx := m.list.Index()
-		m.state = msg.state
-		m.rebuildItems()
-		if len(m.list.Items()) > 0 {
-			m.list.Select(min(idx, len(m.list.Items())-1))
+		// Dynamic per-item spacing can also live here.
+		if idx != len(m.items)-1 {
+			lines = append(lines, "")
 		}
 	}
 
-	var cmd tea.Cmd
-	m.list, cmd = m.list.Update(msg)
-	return m, cmd
+	m.viewport.SetContent(strings.Join(lines, "\n"))
 }
 
-func refreshTick() tea.Cmd {
-	return tea.Tick(2*time.Second, func(t time.Time) tea.Msg { return tickMsg(t) })
-}
-
-func (m Model) doRefresh() tea.Cmd {
-	return func() tea.Msg {
-		return refreshMsg{state: m.state}
-		// if m.refresh == nil {
-		// }
-		// state, err := m.refresh()
-		// return refreshMsg{state: state, err: err}
+func (m *Model) moveSelection(delta int) {
+	if len(m.items) == 0 {
+		return
 	}
+	m.selected = min(max(0, m.selected+delta), len(m.items)-1)
+	m.renderContent()
+	m.ensureSelectedVisible()
 }
 
-func (m *Model) rebuildItems() {
-	items := New(m.state, m.refresh).list.Items()
-	m.list.SetItems(items)
+func (m *Model) ensureSelectedVisible() {
+	if m.selected < 0 || m.selected >= len(m.spans) {
+		return
+	}
+	span := m.spans[m.selected]
+	top := m.viewport.YOffset()
+	bottom := top + m.viewport.Height()
+	if span.start < top {
+		m.viewport.SetYOffset(span.start)
+		return
+	}
+	if span.end > bottom {
+		m.viewport.SetYOffset(span.end - m.viewport.Height())
+	}
 }
 
 func (m Model) View() tea.View {
 	badge := m.styles.Badge.Render(strings.ToUpper(string(m.state.Multiplexer.Kind)))
 	header := fmt.Sprintf("%s  %d projects", badge, len(m.state.Workspaces))
-	footer := m.styles.Help.Render("↑/↓ move · scroll/click · Enter switch/create · / filter · q quit")
-	v := tea.NewView(m.styles.Panel.Render(header + "\n" + m.list.View() + "\n" + m.styles.Muted.Render(m.status) + "\n" + footer))
+	footer := m.styles.Help.Render("↑/↓ move · scroll · Enter switch/create · q quit")
+	body := m.viewport.View()
+	v := tea.NewView(m.styles.Panel.Render(header + "\n" + body + "\n" + m.styles.Muted.Render(m.status) + "\n" + footer))
 	v.AltScreen = true
 	return v
 }
 
 func (m Model) activateSelected() (tea.Model, tea.Cmd) {
-	selected, ok := m.list.SelectedItem().(item)
-	if !ok {
+	if len(m.items) == 0 || m.selected < 0 || m.selected >= len(m.items) {
 		m.status = "Pick a project or session"
 		return m, nil
 	}
+	selected := m.items[m.selected]
 
 	if selected.kind == kindWorkspace && !m.state.Multiplexer.SessionNames()[selected.sessionName] {
 		if err := multiplexer.NewSession(m.state.Multiplexer.Kind, selected.sessionName, selected.path); err != nil {
