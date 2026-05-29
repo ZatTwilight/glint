@@ -62,7 +62,7 @@ func Path() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(configHome, "agentbar", "config.json"), nil
+	return filepath.Join(configHome, "glint", "config.json"), nil
 }
 
 func WriteExample() error {

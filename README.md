@@ -1,11 +1,11 @@
-# agentbar
+# glint
 
 A tiny Go/Bubble Tea prototype for a terminal-native workspace + agent sidebar.
 
 ## Run
 
 ```bash
-go run ./cmd/agentbar
+go run ./cmd/glint
 ```
 
 ## In tmux
@@ -16,18 +16,18 @@ Mouse support needs tmux mouse mode enabled:
 tmux set -g mouse on
 ```
 
-Then run Agentbar as a sidebar:
+Then run Glint as a sidebar:
 
 ```bash
-tmux split-window -h -l 36 'cd ~/Documents/dev/agentbar && go run ./cmd/agentbar'
+tmux split-window -h -l 36 'cd ~/Documents/dev/glint && go run ./cmd/glint'
 ```
 
 ## Config
 
-Agentbar reads workspace roots from:
+Glint reads workspace roots from:
 
 ```text
-~/.config/agentbar/config.json
+~/.config/glint/config.json
 ```
 
 Example:
@@ -42,7 +42,7 @@ Example:
 }
 ```
 
-If the file is missing, Agentbar defaults to `~/Documents/dev`.
+If the file is missing, Glint defaults to `~/Documents/dev`.
 
 Themes:
 

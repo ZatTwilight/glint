@@ -1,4 +1,4 @@
-module github.com/kait/agentbar
+module github.com/ZatTwilight/glint
 
 go 1.26.3
 

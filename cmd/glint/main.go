@@ -5,11 +5,11 @@ import (
 	"os"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/kait/agentbar/internal/config"
-	"github.com/kait/agentbar/internal/multiplexer"
-	"github.com/kait/agentbar/internal/theme"
-	"github.com/kait/agentbar/internal/ui"
-	"github.com/kait/agentbar/internal/workspace"
+	"github.com/ZatTwilight/glint/internal/config"
+	"github.com/ZatTwilight/glint/internal/multiplexer"
+	"github.com/ZatTwilight/glint/internal/theme"
+	"github.com/ZatTwilight/glint/internal/ui"
+	"github.com/ZatTwilight/glint/internal/workspace"
 )
 
 func main() {
@@ -45,7 +45,7 @@ func main() {
 
 	program := tea.NewProgram(model)
 	if _, err := program.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "agentbar: %v\n", err)
+		fmt.Fprintf(os.Stderr, "glint: %v\n", err)
 		os.Exit(1)
 	}
 }

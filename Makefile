@@ -1,13 +1,10 @@
 .PHONY: run dev build test fmt
 
 run:
-	go run ./cmd/agentbar
-
-dev:
-	watchexec -r -e go -- sh -c 'go run ./cmd/agentbar < /dev/tty > /dev/tty 2>&1'
+	go run ./cmd/glint
 
 build:
-	go build -o bin/agentbar ./cmd/agentbar
+	go build -o bin/glint ./cmd/glint
 
 test:
 	go test ./...

@@ -9,10 +9,10 @@ import (
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"github.com/kait/agentbar/internal/multiplexer"
-	"github.com/kait/agentbar/internal/theme"
-	"github.com/kait/agentbar/internal/workspace"
-	"github.com/kait/agentbar/internal/util"
+	"github.com/ZatTwilight/glint/internal/multiplexer"
+	"github.com/ZatTwilight/glint/internal/theme"
+	"github.com/ZatTwilight/glint/internal/util"
+	"github.com/ZatTwilight/glint/internal/workspace"
 )
 
 type State struct {
@@ -105,7 +105,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		headerHeight := lipgloss.Height(m.viewHeader())
 		footerHeight := lipgloss.Height(m.viewHeader())
 		verticalMarginHeight := headerHeight + footerHeight
-		m.viewport.SetHeight(msg.Height-verticalMarginHeight)
+		m.viewport.SetHeight(msg.Height - verticalMarginHeight)
 		m.renderContent()
 	case tickMsg:
 		return m, tea.Batch(m.doRefresh(), refreshTick())
@@ -158,7 +158,7 @@ func (m Model) getItems() []workspace.Workspace {
 }
 
 func (m Model) viewportInnerWidth() int {
-    return max(0, m.viewport.Width()-m.viewport.Style.GetHorizontalFrameSize())
+	return max(0, m.viewport.Width()-m.viewport.Style.GetHorizontalFrameSize())
 }
 
 func (m *Model) renderContent() {

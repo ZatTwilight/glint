@@ -239,11 +239,9 @@ func scanWorktrees(parent Workspace, activeSessions map[string]bool, activePaths
 }
 
 func Sort(workspaces []Workspace) {
-	groupActive := map[string]bool{}
 	groupModified := map[string]time.Time{}
 	for _, ws := range workspaces {
 		group := groupName(ws)
-		groupActive[group] = groupActive[group] || ws.ActiveInTmux
 		if ws.ModifiedAt.After(groupModified[group]) {
 			groupModified[group] = ws.ModifiedAt
 		}
@@ -256,9 +254,6 @@ func Sort(workspaces []Workspace) {
 		rightGroup := groupName(right)
 
 		if leftGroup != rightGroup {
-			if groupActive[leftGroup] != groupActive[rightGroup] {
-				return groupActive[leftGroup]
-			}
 			if !groupModified[leftGroup].Equal(groupModified[rightGroup]) {
 				return groupModified[leftGroup].After(groupModified[rightGroup])
 			}
@@ -267,9 +262,6 @@ func Sort(workspaces []Workspace) {
 
 		if left.IsWorktree != right.IsWorktree {
 			return !left.IsWorktree
-		}
-		if left.ActiveInTmux != right.ActiveInTmux {
-			return left.ActiveInTmux
 		}
 		if !left.ModifiedAt.Equal(right.ModifiedAt) {
 			return left.ModifiedAt.After(right.ModifiedAt)

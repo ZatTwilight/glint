@@ -51,7 +51,7 @@ func Resolve(name string) Theme {
 func NewStyles(t Theme) Styles {
 	return Styles{
 		Help:   lipgloss.NewStyle().Foreground(t.Muted).MarginTop(1).Padding(0, 1),
-		Header: lipgloss.NewStyle().MarginBottom(1).Padding(0,1),
+		Header: lipgloss.NewStyle().MarginBottom(1).Padding(0, 1),
 		Muted:  lipgloss.NewStyle().Foreground(t.Muted),
 		Badge:  lipgloss.NewStyle().Foreground(t.BadgeText).Background(t.Accent).Padding(0, 1),
 		Body:   lipgloss.NewStyle().Padding(1, 0),

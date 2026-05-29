@@ -4,9 +4,9 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
-	"github.com/kait/agentbar/internal/theme"
-	"github.com/kait/agentbar/internal/util"
-	"github.com/kait/agentbar/internal/workspace"
+	"github.com/ZatTwilight/glint/internal/theme"
+	"github.com/ZatTwilight/glint/internal/util"
+	"github.com/ZatTwilight/glint/internal/workspace"
 )
 
 // itemRenderer is the small rendering layer for each row in the sidebar.
