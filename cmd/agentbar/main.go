@@ -7,6 +7,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/kait/agentbar/internal/config"
 	"github.com/kait/agentbar/internal/multiplexer"
+	"github.com/kait/agentbar/internal/theme"
 	"github.com/kait/agentbar/internal/ui"
 	"github.com/kait/agentbar/internal/workspace"
 )
@@ -18,6 +19,8 @@ func main() {
 		os.Exit(1)
 	}
 
+	appTheme := theme.Resolve(cfg.Theme)
+
 	refresh := func() (ui.State, error) {
 		mux := multiplexer.Detect()
 		workspaces, err := workspace.Scan(cfg.WorkspaceRoots, mux.SessionNames(), mux.SessionPaths())
@@ -28,6 +31,7 @@ func main() {
 			Multiplexer:    mux,
 			Workspaces:     workspaces,
 			WorkspaceRoots: cfg.WorkspaceRoots,
+			Theme:          appTheme,
 		}, nil
 	}
 

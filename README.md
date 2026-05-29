@@ -37,11 +37,21 @@ Example:
   "workspace_roots": [
     "~/Documents/dev",
     "~/work"
-  ]
+  ],
+  "theme": "auto"
 }
 ```
 
 If the file is missing, Agentbar defaults to `~/Documents/dev`.
+
+Themes:
+
+- `auto` - infer light/dark from the terminal when possible
+- `dark`
+- `light`
+- `dracula`
+- `catppuccin`
+- `kanagawa`
 
 ## Current prototype
 

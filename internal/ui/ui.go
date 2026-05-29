@@ -8,8 +8,8 @@ import (
 
 	"charm.land/bubbles/v2/list"
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
 	"github.com/kait/agentbar/internal/multiplexer"
+	"github.com/kait/agentbar/internal/theme"
 	"github.com/kait/agentbar/internal/workspace"
 )
 
@@ -17,6 +17,7 @@ type State struct {
 	Multiplexer    multiplexer.Info
 	Workspaces     []workspace.Workspace
 	WorkspaceRoots []string
+	Theme          theme.Theme
 }
 
 type RefreshFunc func() (State, error)
@@ -26,6 +27,7 @@ type Model struct {
 	list    list.Model
 	status  string
 	refresh RefreshFunc
+	styles  theme.Styles
 }
 
 type itemKind int
@@ -48,14 +50,8 @@ func (i item) Title() string       { return i.title }
 func (i item) Description() string { return i.desc }
 func (i item) FilterValue() string { return i.title }
 
-var (
-	panelStyle = lipgloss.NewStyle().Padding(1, 2)
-	helpStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	mutedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	badgeStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("0")).Background(lipgloss.Color("6")).Padding(0, 1)
-)
-
 func New(state State, refresh RefreshFunc) Model {
+	styles := theme.NewStyles(state.Theme)
 	sessionsByName := state.Multiplexer.SessionByName()
 	sessionsByPath := state.Multiplexer.SessionByPath()
 	workspaceSessions := make(map[string]bool, len(state.Workspaces))
@@ -91,13 +87,15 @@ func New(state State, refresh RefreshFunc) Model {
 		items = append(items[:1], append([]list.Item{row}, items[1:]...)...)
 	}
 
-	l := list.New(items, list.NewDefaultDelegate(), 34, 24)
+	delegate := list.NewDefaultDelegate()
+	theme.ApplyListTheme(&delegate, state.Theme)
+	l := list.New(items, delegate, 34, 24)
 	l.SetShowTitle(false)
 	l.SetShowStatusBar(false)
 	l.SetFilteringEnabled(true)
 	l.SetShowHelp(false)
 
-	return Model{state: state, list: l, status: "Enter switches or creates tmux sessions", refresh: refresh}
+	return Model{state: state, list: l, status: "Enter switches or creates tmux sessions", refresh: refresh, styles: styles}
 }
 
 func (m Model) Init() tea.Cmd { return refreshTick() }
@@ -164,10 +162,10 @@ func (m *Model) rebuildItems() {
 }
 
 func (m Model) View() tea.View {
-	badge := badgeStyle.Render(strings.ToUpper(string(m.state.Multiplexer.Kind)))
+	badge := m.styles.Badge.Render(strings.ToUpper(string(m.state.Multiplexer.Kind)))
 	header := fmt.Sprintf("%s  %d projects", badge, len(m.state.Workspaces))
-	footer := helpStyle.Render("↑/↓ move · scroll/click · Enter switch/create · / filter · q quit")
-	v := tea.NewView(panelStyle.Render(header + "\n" + m.list.View() + "\n" + mutedStyle.Render(m.status) + "\n" + footer))
+	footer := m.styles.Help.Render("↑/↓ move · scroll/click · Enter switch/create · / filter · q quit")
+	v := tea.NewView(m.styles.Panel.Render(header + "\n" + m.list.View() + "\n" + m.styles.Muted.Render(m.status) + "\n" + footer))
 	v.AltScreen = true
 	return v
 }

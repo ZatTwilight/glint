@@ -10,6 +10,7 @@ import (
 
 type Config struct {
 	WorkspaceRoots []string `json:"workspace_roots"`
+	Theme          string   `json:"theme"`
 }
 
 func Load() (Config, error) {
@@ -30,8 +31,12 @@ func Load() (Config, error) {
 	if err := json.Unmarshal(contents, &cfg); err != nil {
 		return Config{}, fmt.Errorf("parse %s: %w", path, err)
 	}
+	defaults := Default()
 	if len(cfg.WorkspaceRoots) == 0 {
-		cfg.WorkspaceRoots = Default().WorkspaceRoots
+		cfg.WorkspaceRoots = defaults.WorkspaceRoots
+	}
+	if cfg.Theme == "" {
+		cfg.Theme = defaults.Theme
 	}
 
 	for i, root := range cfg.WorkspaceRoots {
@@ -49,7 +54,7 @@ func Default() Config {
 	if err != nil {
 		return Config{WorkspaceRoots: []string{"."}}
 	}
-	return Config{WorkspaceRoots: []string{filepath.Join(home, "Documents", "dev")}}
+	return Config{WorkspaceRoots: []string{filepath.Join(home, "Documents", "dev")}, Theme: "auto"}
 }
 
 func Path() (string, error) {
