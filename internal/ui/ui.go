@@ -72,14 +72,15 @@ func New(state State, refresh RefreshFunc) Model {
 	return m
 }
 
-func (m Model) Init() tea.Cmd { return refreshTick() }
+func (m Model) Init() tea.Cmd { return tea.Batch(refreshTick(), animationTick()) }
 
 type refreshMsg struct {
 	state State
 	err   error
 }
 
-type tickMsg time.Time
+type refreshTickMsg time.Time
+type animationTickMsg time.Time
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -116,8 +117,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		verticalMarginHeight := headerHeight + footerHeight
 		m.viewport.SetHeight(msg.Height - verticalMarginHeight)
 		m.renderContent()
-	case tickMsg:
+	case refreshTickMsg:
 		return m, tea.Batch(m.doRefresh(), refreshTick())
+	case animationTickMsg:
+		m.renderContent()
+		return m, animationTick()
 	case refreshMsg:
 		if msg.err != nil {
 			m.status = fmt.Sprintf("Refresh failed: %v", msg.err)
@@ -139,7 +143,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func refreshTick() tea.Cmd {
-	return tea.Tick(2*time.Second, func(t time.Time) tea.Msg { return tickMsg(t) })
+	return tea.Tick(2*time.Second, func(t time.Time) tea.Msg { return refreshTickMsg(t) })
+}
+
+func animationTick() tea.Cmd {
+	return tea.Tick(120*time.Millisecond, func(t time.Time) tea.Msg { return animationTickMsg(t) })
 }
 
 func (m Model) doRefresh() tea.Cmd {

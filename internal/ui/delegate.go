@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"charm.land/lipgloss/v2"
 	"github.com/ZatTwilight/glint/internal/agent"
@@ -55,10 +56,10 @@ func (r itemRenderer) RenderVisible(item visibleItem, selected bool, width int) 
 	if item.Kind == kindAgent && item.AgentIndex >= 0 && item.AgentIndex < len(item.Workspace.Agents) {
 		ag := item.Workspace.Agents[item.AgentIndex]
 		rowWidth := width - r.styles.Title.GetHorizontalFrameSize()
-		left := fmt.Sprintf("  %s %s %s %s", agent.Symbol(ag.Status), agent.Icon(ag.Name), agent.DisplayStatus(ag.Status), quoteTask(ag.Task))
-		right := relativeTime(ag.Activity)
+		left := fmt.Sprintf("  %s %s", agent.Icon(ag.Name), quoteTask(ag.Task))
+		right := agentTimeStatus(ag)
 		if ag.History {
-			right = right + " history"
+			right = strings.TrimSpace(right + " history")
 		}
 		line := util.RightAlignLine(left, right, rowWidth)
 		if ag.Current {
@@ -116,6 +117,24 @@ func (r itemRenderer) Render(i workspace.Workspace, selected bool, width int) st
 	// }
 
 	return strings.Join(lines, "\n")
+}
+
+func agentTimeStatus(ag agent.Agent) string {
+	rel := relativeTime(ag.Activity)
+	switch agent.DisplayStatus(ag.Status) {
+	case "working":
+		return strings.TrimSpace(spinnerFrame() + " " + rel)
+	case "done":
+		if rel == "now" {
+			return "✓ now"
+		}
+	}
+	return rel
+}
+
+func spinnerFrame() string {
+	frames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+	return frames[(time.Now().UnixMilli()/120)%int64(len(frames))]
 }
 
 func quoteTask(task string) string {
