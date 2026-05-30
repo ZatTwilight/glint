@@ -60,10 +60,15 @@ func New(state State, refresh RefreshFunc) Model {
 	vp.MouseWheelDelta = 1
 	vp.Style = styles.Body
 
+	status := "Enter switches or creates sessions"
+	if len(state.Workspaces) == 0 && refresh != nil {
+		status = "Loading workspaces…"
+	}
+
 	m := Model{
 		state:    state,
 		viewport: vp,
-		status:   "Enter switches or creates sessions",
+		status:   status,
 		refresh:  refresh,
 		styles:   styles,
 		renderer: newItemRenderer(state.Theme),
@@ -72,7 +77,7 @@ func New(state State, refresh RefreshFunc) Model {
 	return m
 }
 
-func (m Model) Init() tea.Cmd { return tea.Batch(refreshTick(), animationTick()) }
+func (m Model) Init() tea.Cmd { return tea.Batch(initialRefreshTick(), refreshTick(), animationTick()) }
 
 type refreshMsg struct {
 	state State
@@ -127,6 +132,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = fmt.Sprintf("Refresh failed: %v", msg.err)
 			return m, nil
 		}
+		if m.status == "Loading workspaces…" {
+			m.status = "Enter switches or creates sessions"
+		}
 		idx := m.selected
 		m.state = msg.state
 		m.rebuildItems()
@@ -140,6 +148,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.viewport, cmd = m.viewport.Update(msg)
 	return m, cmd
+}
+
+func initialRefreshTick() tea.Cmd {
+	return tea.Tick(time.Millisecond, func(t time.Time) tea.Msg { return refreshTickMsg(t) })
 }
 
 func refreshTick() tea.Cmd {
@@ -196,6 +208,9 @@ func (m *Model) renderContent() {
 	lines := []string{}
 	m.spans = make([]itemSpan, 0, len(m.state.Workspaces))
 	items := m.visibleItems()
+	if len(items) == 0 && m.status == "Loading workspaces…" {
+		lines = append(lines, "Loading workspaces…")
+	}
 	for idx, item := range items {
 		start := len(lines)
 		rendered := m.renderer.RenderVisible(item, idx == m.selected, m.viewportInnerWidth())

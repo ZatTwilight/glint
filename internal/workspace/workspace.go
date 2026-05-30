@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ZatTwilight/glint/internal/agent"
+	"github.com/ZatTwilight/glint/internal/multiplexer"
 )
 
 type GitType int
@@ -37,11 +38,21 @@ type Workspace struct {
 }
 
 func Scan(roots []string, activeSessions map[string]bool, activePaths map[string]bool) ([]Workspace, error) {
+	return ScanWithPrograms(roots, activeSessions, activePaths, nil)
+}
+
+func ScanWithPrograms(roots []string, activeSessions map[string]bool, activePaths map[string]bool, programs []multiplexer.MultiplexerProgram) ([]Workspace, error) {
+	if programs == nil {
+		programs = multiplexer.TmuxProgramsAll(agent.AgentName, agent.DescendantCommands)
+		if programs == nil {
+			programs = []multiplexer.MultiplexerProgram{}
+		}
+	}
 	seen := map[string]bool{}
 	workspaces := []Workspace{}
 
 	for _, root := range roots {
-		rootWorkspaces, err := scanRoot(root, activeSessions, activePaths)
+		rootWorkspaces, err := scanRoot(root, activeSessions, activePaths, programs)
 		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}
@@ -61,7 +72,7 @@ func Scan(roots []string, activeSessions map[string]bool, activePaths map[string
 	return workspaces, nil
 }
 
-func scanRoot(root string, activeSessions map[string]bool, activePaths map[string]bool) ([]Workspace, error) {
+func scanRoot(root string, activeSessions map[string]bool, activePaths map[string]bool, programs []multiplexer.MultiplexerProgram) ([]Workspace, error) {
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return nil, err
@@ -79,14 +90,7 @@ func scanRoot(root string, activeSessions map[string]bool, activePaths map[strin
 			continue
 		}
 
-		cmd := exec.Command("git", "rev-parse", "--git-dir")
-		cmd.Dir = path
-		_, err = cmd.Output()
-		isGitDir := false
-		if err != nil {
-		} else {
-			isGitDir = true
-		}
+		isGitDir := isGitRepository(path)
 
 		parent := Workspace{
 			Name:         entry.Name(),
@@ -97,14 +101,14 @@ func scanRoot(root string, activeSessions map[string]bool, activePaths map[strin
 			GitType:      none,
 		}
 		if !isGitDir {
-			parent.Agents = agent.ScanWorkspace(parent.Name, parent.Path)
+			parent.Agents = agent.ScanWorkspaceWithPrograms(parent.Name, parent.Path, programs)
 			workspaces = append(workspaces, parent)
 
 			// s, _ := json.MarshalIndent(parent, "	", "  ")
 			// fmt.Printf("Parent	%s\n", string(s))
 		} else {
 			// fmt.Printf("Checking %s\n", path)
-			for _, wt := range scanWorktrees(parent, activeSessions, activePaths) {
+			for _, wt := range scanWorktrees(parent, activeSessions, activePaths, programs) {
 				workspaces = append(workspaces, wt)
 				// s, _ := json.MarshalIndent(wt, "	", "  ")
 				// fmt.Printf("Wt	%s\n", string(s))
@@ -141,7 +145,26 @@ type WorktreeResp struct {
 	ModTime    time.Time
 }
 
-func scanWorktrees(parent Workspace, activeSessions map[string]bool, activePaths map[string]bool) []Workspace {
+func isGitRepository(path string) bool {
+	gitPath := filepath.Join(path, ".git")
+	if info, err := os.Stat(gitPath); err == nil {
+		return info.IsDir() || info.Mode().IsRegular()
+	}
+	cmd := exec.Command("git", "rev-parse", "--git-dir")
+	cmd.Dir = path
+	return cmd.Run() == nil
+}
+
+func isLinkedWorktree(path string) bool {
+	gitPath := filepath.Join(path, ".git")
+	info, err := os.Stat(gitPath)
+	if err != nil {
+		return false
+	}
+	return info.Mode().IsRegular()
+}
+
+func scanWorktrees(parent Workspace, activeSessions map[string]bool, activePaths map[string]bool, programs []multiplexer.MultiplexerProgram) []Workspace {
 	out, err := exec.Command("git", "-C", parent.Path, "worktree", "list", "--porcelain").Output()
 	if err != nil {
 		return nil
@@ -168,20 +191,7 @@ func scanWorktrees(parent Workspace, activeSessions map[string]bool, activePaths
 			}
 			curWorktree.Path = path
 			curWorktree.ModTime = info.ModTime()
-			cmd1 := exec.Command("git", "rev-parse", "--git-dir")
-			cmd1.Dir = path
-			cmd2 := exec.Command("git", "rev-parse", "--git-common-dir")
-			cmd2.Dir = path
-			gitDir, err1 := cmd1.CombinedOutput()
-			gitCommonDir, err2 := cmd2.CombinedOutput()
-			if err1 != nil || err2 != nil {
-				continue
-			}
-			if string(gitDir) != string(gitCommonDir) {
-				curWorktree.IsWorktree = true
-			} else {
-				curWorktree.IsWorktree = false
-			}
+			curWorktree.IsWorktree = isLinkedWorktree(path)
 		} else if after, ok := strings.CutPrefix(line, "HEAD "); ok {
 			curWorktree.Head = after
 		} else if line == "bare" {
@@ -209,6 +219,8 @@ func scanWorktrees(parent Workspace, activeSessions map[string]bool, activePaths
 		root := wt.Path
 		if wt.IsWorktree {
 			root = parent.Path
+		} else if wt.Kind == bare {
+			root = parent.Root
 		}
 		worktrees = append(worktrees, Workspace{
 			Name:         name,
@@ -221,7 +233,7 @@ func scanWorktrees(parent Workspace, activeSessions map[string]bool, activePaths
 			GitType:      wt.Kind,
 			Branch:       wt.Branch,
 			Head:         wt.Head,
-			Agents:       agent.ScanWorkspace(name, wt.Path),
+			Agents:       agent.ScanWorkspaceWithPrograms(name, wt.Path, programs),
 		})
 	}
 

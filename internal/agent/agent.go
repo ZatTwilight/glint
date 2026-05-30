@@ -9,7 +9,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ZatTwilight/glint/internal/multiplexer"
@@ -46,23 +48,26 @@ type Agent struct {
 }
 
 func ScanWorkspace(workspaceName string, workspacePath string) []Agent {
+	return ScanWorkspaceWithPrograms(workspaceName, workspacePath, nil)
+}
+
+func ScanWorkspaceWithPrograms(workspaceName string, workspacePath string, programs []multiplexer.MultiplexerProgram) []Agent {
 	// For now, rely on explicit hook state plus Pi's persisted session history.
 	// tmux pane inspection is intentionally disabled because pane titles/activity
 	// are too noisy for stable chat status.
 	// _ = scanLiveTmux(workspaceName, workspacePath)
 	agents := ScanHookState(workspacePath)
 	agents = mergePiHistory(agents, scanPiHistory(workspacePath))
-	agents = populateMultiplexer(agents, workspacePath)
+	agents = populateMultiplexer(agents, workspacePath, programs)
 	sortAgents(agents)
 	return agents
 }
 
-func populateMultiplexer(agents []Agent, workspacePath string) []Agent {
-	var programs []multiplexer.MultiplexerProgram
-	if os.Getenv("TMUX") != "" {
+func populateMultiplexer(agents []Agent, workspacePath string, programs []multiplexer.MultiplexerProgram) []Agent {
+	if programs == nil && os.Getenv("TMUX") != "" {
 		programs = multiplexer.TmuxPrograms(workspacePath, AgentName, DescendantCommands)
 	} else {
-		// idk todo i guess ?
+		programs = multiplexer.FilterProgramsByWorkspace(programs, workspacePath)
 	}
 
 	usedPrograms := make(map[int]bool, len(programs))
@@ -564,6 +569,75 @@ func AgentName(values ...string) (string, bool) {
 }
 
 func DescendantCommands(pid string) []string {
+	return NewLazyDescendantCommands()(pid)
+}
+
+type processInfo struct {
+	pid     int
+	command string
+}
+
+type processSnapshot struct {
+	children map[int][]processInfo
+}
+
+func NewLazyDescendantCommands() func(string) []string {
+	var snapshot processSnapshot
+	var snapshotErr error
+	var once sync.Once
+	return func(pid string) []string {
+		parent, err := strconv.Atoi(strings.TrimSpace(pid))
+		if err != nil {
+			return nil
+		}
+		once.Do(func() { snapshot, snapshotErr = loadProcessSnapshot() })
+		if snapshotErr != nil {
+			return descendantCommandsBySubprocess(pid)
+		}
+		return snapshot.descendantCommands(parent)
+	}
+}
+
+func loadProcessSnapshot() (processSnapshot, error) {
+	out, err := exec.Command("ps", "-eo", "pid=,ppid=,comm=").Output()
+	if err != nil {
+		return processSnapshot{}, err
+	}
+	snapshot := processSnapshot{children: map[int][]processInfo{}}
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 3 {
+			continue
+		}
+		pid, err1 := strconv.Atoi(fields[0])
+		ppid, err2 := strconv.Atoi(fields[1])
+		if err1 != nil || err2 != nil {
+			continue
+		}
+		snapshot.children[ppid] = append(snapshot.children[ppid], processInfo{pid: pid, command: strings.Join(fields[2:], " ")})
+	}
+	return snapshot, nil
+}
+
+func (s processSnapshot) descendantCommands(parent int) []string {
+	seen := map[int]bool{}
+	var commands []string
+	var walk func(int)
+	walk = func(pid int) {
+		if seen[pid] {
+			return
+		}
+		seen[pid] = true
+		for _, child := range s.children[pid] {
+			commands = append(commands, child.command)
+			walk(child.pid)
+		}
+	}
+	walk(parent)
+	return commands
+}
+
+func descendantCommandsBySubprocess(pid string) []string {
 	seen := map[string]bool{}
 	var commands []string
 	var walk func(string)
@@ -576,7 +650,7 @@ func DescendantCommands(pid string) []string {
 		if err != nil {
 			return
 		}
-		for _, child := range strings.Fields(string(out)) {
+		for child := range strings.FieldsSeq(string(out)) {
 			cmd, err := exec.Command("ps", "-p", child, "-o", "comm=").Output()
 			if err == nil {
 				commands = append(commands, strings.TrimSpace(string(cmd)))

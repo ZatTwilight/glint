@@ -5,6 +5,7 @@ import (
 	"os"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/ZatTwilight/glint/internal/agent"
 	"github.com/ZatTwilight/glint/internal/config"
 	"github.com/ZatTwilight/glint/internal/multiplexer"
 	"github.com/ZatTwilight/glint/internal/theme"
@@ -46,7 +47,8 @@ func main() {
 
 	refresh := func() (ui.State, error) {
 		mux := multiplexer.Detect()
-		workspaces, err := workspace.Scan(cfg.WorkspaceRoots, mux.SessionNames(), mux.SessionPaths())
+		programs := multiplexer.TmuxProgramsAll(agent.AgentName, agent.NewLazyDescendantCommands())
+		workspaces, err := workspace.ScanWithPrograms(cfg.WorkspaceRoots, mux.SessionNames(), mux.SessionPaths(), programs)
 		if err != nil {
 			return ui.State{}, err
 		}
@@ -58,10 +60,9 @@ func main() {
 		}, nil
 	}
 
-	state, err := refresh()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "scan workspaces: %v\n", err)
-		os.Exit(1)
+	state := ui.State{
+		WorkspaceRoots: cfg.WorkspaceRoots,
+		Theme:          appTheme,
 	}
 
 	model := ui.New(state, refresh)
