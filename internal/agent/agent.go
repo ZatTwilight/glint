@@ -9,9 +9,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
+
+	"github.com/ZatTwilight/glint/internal/multiplexer"
 )
 
 type Status string
@@ -33,6 +34,8 @@ type Agent struct {
 	Status     Status
 	Path       string
 	Session    string
+	PID        int
+	StartTime  time.Time
 	Window     string
 	Pane       string
 	Current    bool
@@ -42,79 +45,105 @@ type Agent struct {
 	Confidence int
 }
 
-func ScanWorkspace(_ string, workspacePath string) []Agent {
+func ScanWorkspace(workspaceName string, workspacePath string) []Agent {
 	// For now, rely on explicit hook state plus Pi's persisted session history.
 	// tmux pane inspection is intentionally disabled because pane titles/activity
 	// are too noisy for stable chat status.
+	// _ = scanLiveTmux(workspaceName, workspacePath)
 	agents := ScanHookState(workspacePath)
 	agents = mergePiHistory(agents, scanPiHistory(workspacePath))
+	agents = populateMultiplexer(agents, workspacePath)
 	sortAgents(agents)
 	return agents
 }
 
-func scanLiveTmux(workspaceName, workspacePath string) []Agent {
-	if os.Getenv("TMUX") == "" {
-		return nil
+func populateMultiplexer(agents []Agent, workspacePath string) []Agent {
+	var programs []multiplexer.MultiplexerProgram
+	if os.Getenv("TMUX") != "" {
+		programs = multiplexer.TmuxPrograms(workspacePath, AgentName, DescendantCommands)
+	} else {
+		// idk todo i guess ?
 	}
 
-	format := strings.Join([]string{
-		"#{session_name}",
-		"#{window_id}",
-		"#{window_name}",
-		"#{pane_id}",
-		"#{pane_current_path}",
-		"#{pane_current_command}",
-		"#{pane_pid}",
-		"#{pane_title}",
-		"#{pane_active}",
-		"#{window_activity}",
-	}, "\t")
-	out, err := exec.Command("tmux", "list-panes", "-a", "-F", format).Output()
-	if err != nil {
-		return nil
-	}
-
-	workspacePath = filepath.Clean(workspacePath)
-	var agents []Agent
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		fields := strings.Split(line, "\t")
-		if len(fields) < 10 {
+	usedPrograms := make(map[int]bool, len(programs))
+	for i := range agents {
+		best := -1
+		bestScore := 0
+		for j := range programs {
+			if usedPrograms[j] || programs[j].ProgramName != agents[i].Name {
+				continue
+			}
+			score := multiplexerMatchScore(agents[i], programs[j])
+			if score > bestScore {
+				best = j
+				bestScore = score
+			}
+		}
+		if best == -1 || bestScore < 60 {
 			continue
 		}
-		panePath := filepath.Clean(fields[4])
-		inWorkspace := panePath == workspacePath || strings.HasPrefix(panePath, workspacePath+string(os.PathSeparator))
-		inSession := fields[0] == workspaceName || strings.HasSuffix(fields[0], "/"+workspaceName)
-		if !inWorkspace && !inSession {
-			continue
-		}
-		name, ok := agentName(append([]string{fields[5], fields[7], fields[2], fields[0]}, descendantCommands(fields[6])...)...)
-		if !ok {
-			continue
-		}
-		activity := unixTime(fields[9])
-		task := "agent session"
-		agents = append(agents, Agent{
-			Name: name, Task: task, Status: inferStatus(name, activity), Path: panePath,
-			Session: fields[0], Window: fields[1], Pane: fields[3], Current: fields[8] == "1", Activity: activity,
-			Source: "tmux", Confidence: 40,
-		})
+		usedPrograms[best] = true
+		applyMultiplexerProgram(&agents[i], programs[best], bestScore)
 	}
 
 	return agents
 }
 
-func mergeHistory(live, history []Agent) []Agent {
-	seen := map[string]bool{}
-	for _, ag := range live {
-		seen[ag.Name+"\x00"+ag.Task] = true
+func multiplexerMatchScore(agent Agent, program multiplexer.MultiplexerProgram) int {
+	score := 0
+	if samePathOrChild(agent.Path, program.Path) {
+		score += 70
+	} else if filepath.Base(filepath.Clean(agent.Path)) == filepath.Base(filepath.Clean(program.Path)) {
+		score += 25
 	}
-	for _, ag := range history {
-		if seen[ag.Name+"\x00"+ag.Task] {
-			continue
+	if !agent.StartTime.IsZero() && !program.StartTime.IsZero() {
+		delta := agent.StartTime.Sub(program.StartTime)
+		if delta < 0 {
+			delta = -delta
 		}
-		live = append(live, ag)
+		switch {
+		case delta <= 2*time.Minute:
+			score += 70
+		case delta <= 10*time.Minute:
+			score += 45
+		case delta <= time.Hour:
+			score += 20
+		}
 	}
-	return live
+	if agent.PID > 0 && agent.PID == program.PID {
+		score += 100
+	}
+	if agent.Pane != "" && agent.Pane == program.MultiplexerId {
+		score += 100
+	}
+	return score
+}
+
+func samePathOrChild(left, right string) bool {
+	if left == "" || right == "" {
+		return false
+	}
+	left = filepath.Clean(left)
+	right = filepath.Clean(right)
+	return left == right || strings.HasPrefix(left, right+string(os.PathSeparator)) || strings.HasPrefix(right, left+string(os.PathSeparator))
+}
+
+func applyMultiplexerProgram(agent *Agent, program multiplexer.MultiplexerProgram, score int) {
+	agent.PID = firstNonZero(agent.PID, program.PID)
+	agent.Path = firstNonEmpty(agent.Path, program.Path)
+	agent.StartTime = firstNonZeroTime(agent.StartTime, program.StartTime)
+	agent.Session = program.Session
+	agent.Window = program.Window
+	agent.Pane = program.MultiplexerId
+	agent.Current = program.Current
+	if agent.Source == "" {
+		agent.Source = "multiplexer"
+	} else if !strings.Contains(agent.Source, "multiplexer") {
+		agent.Source += "+multiplexer"
+	}
+	if score > agent.Confidence {
+		agent.Confidence = score
+	}
 }
 
 func mergePiHistory(live, history []Agent) []Agent {
@@ -147,33 +176,18 @@ func mergePiHistory(live, history []Agent) []Agent {
 	return dedupeAgents(live)
 }
 
-func mergeHookState(live, hooks []Agent) []Agent {
-	for _, hook := range hooks {
-		matched := false
-		for i := range live {
-			if !sameAgentSession(live[i], hook) {
-				continue
-			}
-			matched = true
-			if hook.Confidence >= live[i].Confidence {
-				live[i].ID = firstNonEmpty(hook.ID, live[i].ID)
-				live[i].Status = hook.Status
-				live[i].Source = hook.Source
-				live[i].Confidence = hook.Confidence
-				if hook.Task != "" && hook.Task != "agent session" {
-					live[i].Task = hook.Task
-				}
-				if !hook.Activity.IsZero() {
-					live[i].Activity = hook.Activity
-				}
-			}
-			break
-		}
-		if !matched {
-			live = append(live, hook)
-		}
+func firstNonZero(left, right int) int {
+	if left != 0 {
+		return left
 	}
-	return live
+	return right
+}
+
+func firstNonZeroTime(left, right time.Time) time.Time {
+	if !left.IsZero() {
+		return left
+	}
+	return right
 }
 
 func sameAgentSession(left, right Agent) bool {
@@ -258,8 +272,9 @@ func scanPiHistory(workspacePath string) []Agent {
 		}
 
 		lastTime := lastJSONLTimestamp(path)
+		jsonlTime := historyTimeFromFile(path, info)
 		if lastTime.IsZero() {
-			lastTime = historyTime(path, info)
+			lastTime = jsonlTime
 		}
 
 		agents = append(agents, Agent{
@@ -268,6 +283,8 @@ func scanPiHistory(workspacePath string) []Agent {
 			Task:       piTask(path),
 			Status:     Completed,
 			Path:       path,
+			PID:        -1,
+			StartTime:  jsonlTime,
 			History:    true,
 			Activity:   lastTime,
 			Source:     "pi-history",
@@ -486,7 +503,7 @@ func encodedWorkspace(path string) string {
 	return "--" + strings.Trim(strings.ReplaceAll(path, string(os.PathSeparator), "-"), "-") + "--"
 }
 
-func historyTime(path string, info fs.FileInfo) time.Time {
+func historyTimeFromFile(path string, info fs.FileInfo) time.Time {
 	base := filepath.Base(path)
 	if idx := strings.Index(base, "_"); idx > 0 {
 		stamp := strings.ReplaceAll(base[:idx], "-", ":")
@@ -531,7 +548,7 @@ func piTask(path string) string {
 	return fmt.Sprintf("session %s", strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)))
 }
 
-func agentName(values ...string) (string, bool) {
+func AgentName(values ...string) (string, bool) {
 	aliases := map[string]string{"pi": "pi", "claude": "claude", "codex": "codex", "aider": "aider", "opencode": "opencode", "goose": "goose"}
 	for _, value := range values {
 		for _, token := range strings.FieldsFunc(strings.ToLower(value), func(r rune) bool {
@@ -549,7 +566,7 @@ func agentName(values ...string) (string, bool) {
 	return "", false
 }
 
-func descendantCommands(pid string) []string {
+func DescendantCommands(pid string) []string {
 	seen := map[string]bool{}
 	var commands []string
 	var walk func(string)
@@ -599,14 +616,6 @@ func taskText(title, window, session string) string {
 		}
 	}
 	return "agent session"
-}
-
-func unixTime(value string) time.Time {
-	unix, err := strconv.ParseInt(value, 10, 64)
-	if err != nil || unix <= 0 {
-		return time.Time{}
-	}
-	return time.Unix(unix, 0)
 }
 
 func Icon(name string) string {

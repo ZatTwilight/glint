@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/shirou/gopsutil/v4/process"
 )
 
 type Kind string
@@ -164,4 +166,105 @@ func tmuxSessions() []Session {
 		sessions = append(sessions, session)
 	}
 	return sessions
+}
+
+type MultiplexerProgram struct {
+	PID           int
+	Path          string
+	StartTime     time.Time
+	MultiplexerId string
+	ProgramName   string
+	Session       string
+	Window        string
+	Current       bool
+	Activity      time.Time
+}
+
+func TmuxPrograms(workspacePath string, identify func(...string) (string, bool), descendants func(string) []string) []MultiplexerProgram {
+	if os.Getenv("TMUX") == "" {
+		return nil
+	}
+
+	format := strings.Join([]string{
+		"#{session_name}",
+		"#{window_id}",
+		"#{window_name}",
+		"#{pane_id}",
+		"#{pane_current_path}",
+		"#{pane_current_command}",
+		"#{pane_pid}",
+		"#{pane_title}",
+		"#{pane_active}",
+		"#{window_activity}",
+	}, "\t")
+	out, err := exec.Command("tmux", "list-panes", "-a", "-F", format).Output()
+	if err != nil {
+		return nil
+	}
+
+	workspacePath = filepath.Clean(workspacePath)
+	var programs []MultiplexerProgram
+	// var agents []Agent
+	// We should just be populating existing agent information with our multiplexer info here.
+	for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
+		fields := strings.Split(line, "\t")
+		if len(fields) < 10 {
+			continue
+		}
+		sessionName, _, windowName, paneId, paneCurrentPath := fields[0], fields[1], fields[2], fields[3], fields[4]
+		paneCurrentCommand, panePid, paneTitle, paneActive, windowActivity := fields[5], fields[6], fields[7], fields[8], fields[9]
+
+		panePath := filepath.Clean(paneCurrentPath)
+		inWorkspace := panePath == workspacePath || strings.HasPrefix(panePath, workspacePath+string(os.PathSeparator))
+		if !inWorkspace {
+			continue
+		}
+		pid, err := strconv.Atoi(panePid)
+		if err != nil {
+			continue
+		}
+		name, ok := identify(append([]string{paneCurrentCommand, paneTitle, windowName, sessionName}, descendants(panePid)...)...)
+		// If not ok here then not an agent program.
+		if !ok {
+			continue
+		}
+		p, err := process.NewProcess(int32(pid))
+		if err != nil {
+			panic(err)
+		}
+
+		createTimeMs, err := p.CreateTime()
+		if err != nil {
+			panic(err)
+		}
+
+		start := time.UnixMilli(createTimeMs)
+
+		programs = append(programs, MultiplexerProgram{
+			PID:           pid,
+			Path:          paneCurrentPath,
+			StartTime:     start,
+			MultiplexerId: paneId,
+			ProgramName:   name,
+			Session:       sessionName,
+			Window:        windowName,
+			Current:       paneActive == "1",
+			Activity:      unixTime(windowActivity),
+		})
+		// agents = append(agents, Agent{
+		// 	Name: name, Task: task, Status: inferStatus(name, activity), Path: panePath,
+		// 	Session: fields[0], Window: fields[1], Pane: fields[3], Current: fields[8] == "1", Activity: activity,
+		// 	Source: "tmux", Confidence: 40,
+		// })
+	}
+
+	return programs
+}
+
+func unixTime(value string) time.Time {
+	unix, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || unix <= 0 {
+		return time.Time{}
+	}
+	return time.Unix(unix, 0)
 }

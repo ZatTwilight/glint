@@ -1,7 +1,9 @@
 package util
 
 import (
+	"strconv"
 	"strings"
+	"time"
 
 	"charm.land/lipgloss/v2"
 )
@@ -23,4 +25,12 @@ func RightAlignLine(left, right string, width int) string {
 		strings.Repeat(" ", gap),
 		right,
 	)
+}
+
+func UnixTime(value string) time.Time {
+	unix, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || unix <= 0 {
+		return time.Time{}
+	}
+	return time.Unix(unix, 0)
 }
