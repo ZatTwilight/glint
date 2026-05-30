@@ -90,7 +90,7 @@ func (r itemRenderer) Render(i workspace.Workspace, selected bool, width int) st
 	if len(i.Agents) > 0 {
 		leftDesc = fmt.Sprintf("%s · %d agent%s", shortPath, len(i.Agents), plural(len(i.Agents)))
 	}
-	descTxt := util.RightAlignLine(leftDesc, relativeTime(i.ModifiedAt), descWidth)
+	descTxt := util.RightAlignLine(leftDesc, relativeTime(workspaceActivityTime(i)), descWidth)
 
 	// if i.GitType != 0 {
 	// 	titleTxt = "󰊢  " + titleTxt
@@ -117,6 +117,16 @@ func (r itemRenderer) Render(i workspace.Workspace, selected bool, width int) st
 	// }
 
 	return strings.Join(lines, "\n")
+}
+
+func workspaceActivityTime(ws workspace.Workspace) time.Time {
+	latest := ws.ModifiedAt
+	for _, ag := range ws.Agents {
+		if ag.Activity.After(latest) {
+			latest = ag.Activity
+		}
+	}
+	return latest
 }
 
 func agentTimeStatus(ag agent.Agent) string {

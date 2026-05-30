@@ -385,10 +385,7 @@ func relativeTime(t time.Time) string {
 	if t.IsZero() {
 		return ""
 	}
-	d := time.Since(t)
-	if d < 0 {
-		d = 0
-	}
+	d := max(time.Since(t), 0)
 	if d < time.Minute {
 		return "now"
 	}
