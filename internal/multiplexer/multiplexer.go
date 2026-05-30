@@ -94,6 +94,20 @@ func SwitchSession(kind Kind, name string) error {
 	}
 }
 
+func SwitchPaneById(kind Kind, paneId string) error {
+	switch kind {
+	case Tmux:
+		if err := exec.Command("tmux", "switch-client", "-t", paneId).Run(); err != nil {
+			return err
+		}
+		return nil
+	case Zellij:
+		return fmt.Errorf("zellij pane switching is not implemented yet")
+	default:
+		return fmt.Errorf("not running inside a supported multiplexer")
+	}
+}
+
 func SwitchPane(kind Kind, session, window, pane string) error {
 	switch kind {
 	case Tmux:
@@ -177,7 +191,6 @@ type MultiplexerProgram struct {
 	Session       string
 	Window        string
 	Current       bool
-	Activity      time.Time
 }
 
 func TmuxPrograms(workspacePath string, identify func(...string) (string, bool), descendants func(string) []string) []MultiplexerProgram {
@@ -195,7 +208,6 @@ func TmuxPrograms(workspacePath string, identify func(...string) (string, bool),
 		"#{pane_pid}",
 		"#{pane_title}",
 		"#{pane_active}",
-		"#{window_activity}",
 	}, "\t")
 	out, err := exec.Command("tmux", "list-panes", "-a", "-F", format).Output()
 	if err != nil {
@@ -208,11 +220,11 @@ func TmuxPrograms(workspacePath string, identify func(...string) (string, bool),
 	// We should just be populating existing agent information with our multiplexer info here.
 	for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
 		fields := strings.Split(line, "\t")
-		if len(fields) < 10 {
+		if len(fields) < 9 {
 			continue
 		}
 		sessionName, _, windowName, paneId, paneCurrentPath := fields[0], fields[1], fields[2], fields[3], fields[4]
-		paneCurrentCommand, panePid, paneTitle, paneActive, windowActivity := fields[5], fields[6], fields[7], fields[8], fields[9]
+		paneCurrentCommand, panePid, paneTitle, paneActive := fields[5], fields[6], fields[7], fields[8]
 
 		panePath := filepath.Clean(paneCurrentPath)
 		inWorkspace := panePath == workspacePath || strings.HasPrefix(panePath, workspacePath+string(os.PathSeparator))
@@ -249,7 +261,6 @@ func TmuxPrograms(workspacePath string, identify func(...string) (string, bool),
 			Session:       sessionName,
 			Window:        windowName,
 			Current:       paneActive == "1",
-			Activity:      unixTime(windowActivity),
 		})
 		// agents = append(agents, Agent{
 		// 	Name: name, Task: task, Status: inferStatus(name, activity), Path: panePath,
@@ -259,12 +270,4 @@ func TmuxPrograms(workspacePath string, identify func(...string) (string, bool),
 	}
 
 	return programs
-}
-
-func unixTime(value string) time.Time {
-	unix, err := strconv.ParseInt(value, 10, 64)
-	if err != nil || unix <= 0 {
-		return time.Time{}
-	}
-	return time.Unix(unix, 0)
 }

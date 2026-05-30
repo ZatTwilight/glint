@@ -236,9 +236,6 @@ func dedupeAgents(agents []Agent) []Agent {
 
 func sortAgents(agents []Agent) {
 	sort.SliceStable(agents, func(i, j int) bool {
-		if agents[i].Current != agents[j].Current {
-			return agents[i].Current
-		}
 		if agents[i].History != agents[j].History {
 			return !agents[i].History
 		}

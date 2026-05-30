@@ -286,8 +286,8 @@ func (m Model) activateSelected() (tea.Model, tea.Cmd) {
 	if item.Kind == kindAgent {
 		ag := item.Workspace.Agents[item.AgentIndex]
 		if ag.Pane != "" {
-			if err := multiplexer.SwitchPane(m.state.Multiplexer.Kind, ag.Session, ag.Window, ag.Pane); err != nil {
-				m.status = fmt.Sprintf("Switch failed: %v", err)
+			if err := multiplexer.SwitchPaneById(m.state.Multiplexer.Kind, ag.Pane); err != nil {
+				m.status = fmt.Sprintf("Switch failed: %v -- %+v, %+v, %+v", err, ag.Session, ag.Window, ag.Pane)
 				return m, nil
 			}
 			m.status = fmt.Sprintf("Switched to %s in %s:%s", ag.Name, ag.Session, ag.Pane)
