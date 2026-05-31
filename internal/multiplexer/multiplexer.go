@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,6 +33,21 @@ type Session struct {
 	Windows  int
 	Attached bool
 	Activity time.Time
+}
+
+func (i Info) CurrentWindow() (string, error) {
+	switch i.Kind {
+	case Tmux:
+		out, err := exec.Command("tmux", "display-message", "-p", "#{window_id}").Output()
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(string(out)), nil
+	case Zellij:
+		return "", fmt.Errorf("zellij session switching is not implemented yet")
+	default:
+		return "", fmt.Errorf("not running inside a supported multiplexer")
+	}
 }
 
 func (i Info) SessionNames() map[string]bool {
@@ -224,14 +240,14 @@ func TmuxProgramsAll(identify func(...string) (string, bool), descendants func(s
 		return nil
 	}
 
-	type paneInfo struct{ sessionName, windowName, paneId, path, command, pid, title, active string }
+	type paneInfo struct{ sessionName, windowId, paneId, path, command, pid, title, active string }
 	var panes []paneInfo
 	for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
 		fields := strings.Split(line, "\t")
 		if len(fields) < 9 {
 			continue
 		}
-		panes = append(panes, paneInfo{fields[0], fields[2], fields[3], fields[4], fields[5], fields[6], fields[7], fields[8]})
+		panes = append(panes, paneInfo{fields[0], fields[1], fields[3], fields[4], fields[5], fields[6], fields[7], fields[8]})
 	}
 
 	programs := make([]MultiplexerProgram, 0, len(panes))
@@ -247,7 +263,7 @@ func TmuxProgramsAll(identify func(...string) (string, bool), descendants func(s
 			if err != nil {
 				return
 			}
-			baseValues := []string{pane.command, pane.title, pane.windowName, pane.sessionName}
+			baseValues := []string{pane.command, pane.title, pane.windowId, pane.sessionName}
 			name, ok := identify(baseValues...)
 			if !ok {
 				name, ok = identify(append(baseValues, descendants(pane.pid)...)...)
@@ -267,11 +283,20 @@ func TmuxProgramsAll(identify func(...string) (string, bool), descendants func(s
 			mu.Lock()
 			programs = append(programs, MultiplexerProgram{
 				PID: pid, Path: pane.path, StartTime: time.UnixMilli(createTimeMs), MultiplexerId: pane.paneId,
-				ProgramName: name, Session: pane.sessionName, Window: pane.windowName, Current: pane.active == "1",
+				ProgramName: name, Session: pane.sessionName, Window: pane.windowId, Current: pane.active == "1",
 			})
 			mu.Unlock()
 		})
 	}
 	wg.Wait()
+	sort.SliceStable(programs, func(i, j int) bool {
+		if programs[i].Session != programs[j].Session {
+			return programs[i].Session < programs[j].Session
+		}
+		if programs[i].Window != programs[j].Window {
+			return programs[i].Window < programs[j].Window
+		}
+		return programs[i].MultiplexerId < programs[j].MultiplexerId
+	})
 	return programs
 }

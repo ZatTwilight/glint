@@ -26,6 +26,7 @@ type itemRendererStyles struct {
 	Description   lipgloss.Style
 	SelectedTitle lipgloss.Style
 	SelectedDesc  lipgloss.Style
+	ActiveTitle   lipgloss.Style
 }
 
 func newItemRenderer(t theme.Theme) itemRenderer {
@@ -39,6 +40,10 @@ func newItemRenderer(t theme.Theme) itemRenderer {
 				Border(lipgloss.NormalBorder(), false, false, false, true).
 				BorderForeground(t.Accent).
 				PaddingLeft(1),
+			ActiveTitle: lipgloss.NewStyle().
+				Foreground(t.Text).
+				Bold(true).
+				PaddingLeft(2),
 			SelectedDesc: lipgloss.NewStyle().
 				Foreground(t.Muted).
 				Border(lipgloss.NormalBorder(), false, false, false, true).
@@ -52,21 +57,18 @@ func (r itemRenderer) IsCollapsed(path string) bool {
 	return r.collapsed[path]
 }
 
-func (r itemRenderer) RenderVisible(item visibleItem, selected bool, width int) string {
+func (r itemRenderer) RenderVisible(item visibleItem, selected bool, width int, currentWindow string) string {
 	if item.Kind == kindAgent && item.AgentIndex >= 0 && item.AgentIndex < len(item.Workspace.Agents) {
 		ag := item.Workspace.Agents[item.AgentIndex]
 		rowWidth := width - r.styles.Title.GetHorizontalFrameSize()
 		left := fmt.Sprintf("  %s %s", agent.Icon(ag.Name), quoteTask(ag.Task))
 		right := agentTimeStatus(ag)
-		if ag.History {
-			right = strings.TrimSpace(right + " history")
-		}
 		line := util.RightAlignLine(left, right, rowWidth)
-		if ag.Current {
-			line = line + " *"
-		}
 		if selected {
 			return r.styles.SelectedTitle.Render(line)
+		}
+		if ag.Window == currentWindow {
+			return r.styles.ActiveTitle.Render(line)
 		}
 		return r.styles.Title.Render(line)
 	}

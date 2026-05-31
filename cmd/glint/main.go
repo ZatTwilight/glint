@@ -7,6 +7,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/ZatTwilight/glint/internal/agent"
 	"github.com/ZatTwilight/glint/internal/config"
+	debuglog "github.com/ZatTwilight/glint/internal/debug"
 	"github.com/ZatTwilight/glint/internal/multiplexer"
 	"github.com/ZatTwilight/glint/internal/theme"
 	"github.com/ZatTwilight/glint/internal/ui"
@@ -14,23 +15,36 @@ import (
 )
 
 func main() {
-	if len(os.Args) > 1 {
-		switch os.Args[1] {
+	args := os.Args[1:]
+	if len(args) > 0 && (args[0] == "--debug" || args[0] == "-d") {
+		debuglog.Set(true)
+		debuglog.Println("debug logging enabled")
+		args = args[1:]
+	}
+
+	if len(args) > 0 {
+		switch args[0] {
 		case "hook":
-			if err := runHook(os.Args[2:]); err != nil {
+			if err := runHook(args[1:]); err != nil {
 				fmt.Fprintf(os.Stderr, "glint hook: %v\n", err)
 				os.Exit(1)
 			}
 			return
 		case "events":
-			if err := runEvents(os.Args[2:]); err != nil {
+			if err := runEvents(args[1:]); err != nil {
 				fmt.Fprintf(os.Stderr, "glint events: %v\n", err)
 				os.Exit(1)
 			}
 			return
 		case "hooks":
-			if err := runHooks(os.Args[2:]); err != nil {
+			if err := runHooks(args[1:]); err != nil {
 				fmt.Fprintf(os.Stderr, "glint hooks: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		case "debug":
+			if err := runDebug(args[1:]); err != nil {
+				fmt.Fprintf(os.Stderr, "glint debug: %v\n", err)
 				os.Exit(1)
 			}
 			return
@@ -52,10 +66,16 @@ func main() {
 		if err != nil {
 			return ui.State{}, err
 		}
+		currentWindow, err := mux.CurrentWindow()
+		if err != nil {
+			return ui.State{}, err
+		}
+
 		return ui.State{
 			Multiplexer:    mux,
 			Workspaces:     workspaces,
 			WorkspaceRoots: cfg.WorkspaceRoots,
+			CurrentWindow:  currentWindow,
 			Theme:          appTheme,
 		}, nil
 	}

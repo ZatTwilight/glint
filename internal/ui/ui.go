@@ -19,6 +19,7 @@ type State struct {
 	Multiplexer    multiplexer.Info
 	Workspaces     []workspace.Workspace
 	WorkspaceRoots []string
+	CurrentWindow  string
 	Theme          theme.Theme
 }
 
@@ -213,7 +214,7 @@ func (m *Model) renderContent() {
 	}
 	for idx, item := range items {
 		start := len(lines)
-		rendered := m.renderer.RenderVisible(item, idx == m.selected, m.viewportInnerWidth())
+		rendered := m.renderer.RenderVisible(item, idx == m.selected, m.viewportInnerWidth(), m.state.CurrentWindow)
 		lines = append(lines, strings.Split(rendered, "\n")...)
 		end := len(lines)
 		m.spans = append(m.spans, itemSpan{start: start, end: end})

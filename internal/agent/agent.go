@@ -8,12 +8,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	debuglog "github.com/ZatTwilight/glint/internal/debug"
 	"github.com/ZatTwilight/glint/internal/multiplexer"
 )
 
@@ -96,6 +98,7 @@ func populateMultiplexer(agents []Agent, workspacePath string, programs []multip
 
 func multiplexerMatchScore(agent Agent, program multiplexer.MultiplexerProgram) int {
 	score := 0
+	strong := false
 	if samePathOrChild(agent.Path, program.Path) {
 		score += 70
 	} else if filepath.Base(filepath.Clean(agent.Path)) == filepath.Base(filepath.Clean(program.Path)) {
@@ -109,17 +112,31 @@ func multiplexerMatchScore(agent Agent, program multiplexer.MultiplexerProgram) 
 		switch {
 		case delta <= 2*time.Minute:
 			score += 70
+			strong = true
 		case delta <= 10*time.Minute:
 			score += 45
+			strong = true
 		case delta <= time.Hour:
 			score += 20
+			strong = true
+		default:
+			// Same workspace is not enough to attach an old history/hook record to
+			// whichever agent happens to be running there now.
+			if agent.Status == Completed || agent.History || strings.Contains(agent.Source, "history") {
+				return 0
+			}
 		}
 	}
 	if agent.PID > 0 && agent.PID == program.PID {
 		score += 100
+		strong = true
 	}
 	if agent.Pane != "" && agent.Pane == program.MultiplexerId {
 		score += 100
+		strong = true
+	}
+	if (agent.Status == Completed || agent.History || strings.Contains(agent.Source, "history")) && !strong {
+		return 0
 	}
 	return score
 }
@@ -136,7 +153,6 @@ func samePathOrChild(left, right string) bool {
 func applyMultiplexerProgram(agent *Agent, program multiplexer.MultiplexerProgram, score int) {
 	agent.PID = firstNonZero(agent.PID, program.PID)
 	agent.Path = firstNonEmpty(agent.Path, program.Path)
-	agent.StartTime = firstNonZeroTime(agent.StartTime, program.StartTime)
 	agent.Session = program.Session
 	agent.Window = program.Window
 	agent.Pane = program.MultiplexerId
@@ -163,6 +179,7 @@ func mergePiHistory(live, history []Agent) []Agent {
 			if hist.Task != "" && hist.Task != "agent session" {
 				live[i].Task = hist.Task
 			}
+			live[i].StartTime = firstNonZeroTime(live[i].StartTime, hist.StartTime)
 			if hist.Activity.After(live[i].Activity) {
 				live[i].Activity = hist.Activity
 			}
@@ -278,6 +295,7 @@ func scanPiHistory(workspacePath string) []Agent {
 		if lastTime.IsZero() {
 			lastTime = jsonlTime
 		}
+		debuglog.Printf("checking pi history %s: %s\n", piSessionIDFromFile(entry.Name()), jsonlTime)
 
 		agents = append(agents, Agent{
 			ID:         piSessionIDFromFile(entry.Name()),
@@ -509,6 +527,8 @@ func historyTimeFromFile(path string, info fs.FileInfo) time.Time {
 	base := filepath.Base(path)
 	if idx := strings.Index(base, "_"); idx > 0 {
 		stamp := strings.ReplaceAll(base[:idx], "-", ":")
+		var re = regexp.MustCompile(`:\d\d\dZ`)
+		stamp = re.ReplaceAllString(stamp, ".000Z")
 		if len(stamp) >= 10 {
 			stamp = strings.Replace(stamp, ":", "-", 2)
 		}
