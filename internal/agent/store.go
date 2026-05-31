@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/ZatTwilight/glint/internal/multiplexer"
 )
 
 const stateDirName = "glint"
@@ -103,7 +105,17 @@ func ScanHookState(workspacePath string) []Agent {
 	workspacePath = filepath.Clean(workspacePath)
 	agents := make([]Agent, 0, len(records))
 	cutoff := time.Now().Add(-14 * 24 * time.Hour)
-	for _, rec := range records {
+	livePaneIDs := multiplexer.TmuxPaneIDsAll()
+	latestChanged := false
+	for key, rec := range records {
+		if rec.Pane != "" && livePaneIDs != nil && !livePaneIDs[rec.Pane] {
+			rec.Pane = ""
+			if rec.Status == Running || rec.Status == Thinking || rec.Status == WaitingInput || rec.Status == NeedsAttention {
+				rec.Status = Completed
+			}
+			records[key] = rec
+			latestChanged = true
+		}
 		if rec.Workspace == "" || rec.Agent == "" || rec.Status == "" {
 			continue
 		}
@@ -122,6 +134,9 @@ func ScanHookState(workspacePath string) []Agent {
 			ID: rec.SessionID, Name: rec.Agent, Task: task, Status: rec.Status, Path: cwd,
 			Pane: rec.Pane, Activity: rec.Time, Source: "hook", Confidence: 100,
 		})
+	}
+	if latestChanged {
+		_ = writeHookLatestRecords(records)
 	}
 	agents = dedupeHookAgents(agents)
 	sort.SliceStable(agents, func(i, j int) bool { return agents[i].Activity.After(agents[j].Activity) })
@@ -180,13 +195,6 @@ func appendHookRecord(record HookRecord) error {
 }
 
 func writeHookLatest(record HookRecord) error {
-	path, err := latestPath()
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
 	latest, _ := readHookLatest()
 	key := hookRecordKey(record)
 	if key == "" {
@@ -209,6 +217,17 @@ func writeHookLatest(record HookRecord) error {
 		}
 	}
 	latest[key] = record
+	return writeHookLatestRecords(latest)
+}
+
+func writeHookLatestRecords(latest map[string]HookRecord) error {
+	path, err := latestPath()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
 	encoded, err := json.MarshalIndent(latest, "", "  ")
 	if err != nil {
 		return err

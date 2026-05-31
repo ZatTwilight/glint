@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -20,6 +21,8 @@ type State struct {
 	Workspaces     []workspace.Workspace
 	WorkspaceRoots []string
 	CurrentWindow  string
+	CurrentSession string
+	SidebarMode    bool
 	Theme          theme.Theme
 }
 
@@ -99,6 +102,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case " ", "tab", "c":
 			m.toggleSelected()
 			return m, nil
+		case "b":
+			return m.shelveMainPane()
+		case "n":
+			return m.newAgentForSelected()
 		case "up", "k":
 			m.moveSelection(-1)
 			return m, nil
@@ -292,7 +299,11 @@ func (m Model) viewHeader() string {
 }
 
 func (m Model) viewFooter() string {
-	content := fmt.Sprintf("status: %s\n↑/↓ move · c/space collapse · Enter switch/create · q quit", m.status)
+	help := "↑/↓ move · c/space collapse · Enter switch/create · n new chat · b shelve · q quit"
+	if m.state.SidebarMode {
+		help = "↑/↓ move · Enter bring/switch · b shelve · c collapse · q quit"
+	}
+	content := fmt.Sprintf("status: %s\n%s", m.status, help)
 	return m.styles.Help.Render(content)
 }
 
@@ -314,6 +325,23 @@ func (m Model) activateSelected() (tea.Model, tea.Cmd) {
 	if item.Kind == kindAgent {
 		ag := item.Workspace.Agents[item.AgentIndex]
 		if ag.Pane != "" {
+			if m.state.SidebarMode {
+				canSwap := ag.Session == "" || ag.Session == m.state.CurrentSession || ag.Session == multiplexer.ShelfSessionName
+				if !canSwap {
+					if err := multiplexer.SwitchPaneById(m.state.Multiplexer.Kind, ag.Pane); err != nil {
+						m.status = fmt.Sprintf("Switch failed: %v -- %+v, %+v, %+v", err, ag.Session, ag.Window, ag.Pane)
+						return m, nil
+					}
+					m.status = fmt.Sprintf("Switched to %s in %s:%s", ag.Name, ag.Session, ag.Pane)
+					return m, nil
+				}
+				if err := multiplexer.BringPaneToSidebarMain(ag.Pane); err != nil {
+					m.status = fmt.Sprintf("Bring failed: %v -- %+v, %+v, %+v", err, ag.Session, ag.Window, ag.Pane)
+					return m, nil
+				}
+				m.status = fmt.Sprintf("Brought %s to main slot", ag.Name)
+				return m, nil
+			}
 			if err := multiplexer.SwitchPaneById(m.state.Multiplexer.Kind, ag.Pane); err != nil {
 				m.status = fmt.Sprintf("Switch failed: %v -- %+v, %+v, %+v", err, ag.Session, ag.Window, ag.Pane)
 				return m, nil
@@ -324,6 +352,89 @@ func (m Model) activateSelected() (tea.Model, tea.Cmd) {
 		return m.activateWorkspace(item.Workspace)
 	}
 	return m.activateWorkspace(item.Workspace)
+}
+
+func (m Model) shelveMainPane() (tea.Model, tea.Cmd) {
+	if !m.state.SidebarMode {
+		m.status = "Shelving is only available in sidebar mode"
+		return m, nil
+	}
+	if m.state.Multiplexer.Kind != multiplexer.Tmux {
+		m.status = "Shelving requires tmux"
+		return m, nil
+	}
+
+	items := m.visibleItems()
+	if m.selected >= 0 && m.selected < len(items) && items[m.selected].Kind == kindAgent {
+		ag := items[m.selected].Workspace.Agents[items[m.selected].AgentIndex]
+		switch {
+		case ag.Pane == "":
+			m.status = fmt.Sprintf("Can't shelve %s; no live pane", ag.Name)
+			return m, nil
+		case ag.Session == multiplexer.ShelfSessionName:
+			if err := multiplexer.ShelveSidebarMain(m.state.CurrentSession); err != nil {
+				m.status = fmt.Sprintf("Shelve failed: %v", err)
+				return m, nil
+			}
+			m.status = "Shelved current main pane"
+			return m, m.doRefresh()
+		case ag.Session == "" || ag.Session == m.state.CurrentSession:
+			if err := multiplexer.ShelvePane(m.state.CurrentSession, ag.Pane); err != nil {
+				m.status = fmt.Sprintf("Shelve failed: %v", err)
+				return m, nil
+			}
+			m.status = fmt.Sprintf("Shelved %s", ag.Name)
+			return m, m.doRefresh()
+		default:
+			m.status = fmt.Sprintf("Can't shelve pane from session %s", ag.Session)
+			return m, nil
+		}
+	}
+
+	if err := multiplexer.ShelveSidebarMain(m.state.CurrentSession); err != nil {
+		m.status = fmt.Sprintf("Shelve failed: %v", err)
+		return m, nil
+	}
+	m.status = "Shelved current main pane"
+	return m, m.doRefresh()
+}
+
+func (m Model) newAgentForSelected() (tea.Model, tea.Cmd) {
+	selected, ok := m.selectedWorkspace()
+	if !ok {
+		m.status = "Pick a project"
+		return m, nil
+	}
+	if !m.state.SidebarMode {
+		m.status = "New chat is only available in sidebar mode"
+		return m, nil
+	}
+	if m.state.Multiplexer.Kind != multiplexer.Tmux {
+		m.status = "New chat requires tmux"
+		return m, nil
+	}
+	command := newAgentCommand()
+	if err := multiplexer.LaunchSidebarMainCommand(m.state.CurrentSession, selected.Path, command); err != nil {
+		m.status = fmt.Sprintf("New chat failed: %v", err)
+		return m, nil
+	}
+	m.status = fmt.Sprintf("Started %s in %s", command, selected.Name)
+	return m, m.doRefresh()
+}
+
+func (m Model) selectedWorkspace() (workspace.Workspace, bool) {
+	items := m.visibleItems()
+	if len(items) == 0 || m.selected < 0 || m.selected >= len(items) {
+		return workspace.Workspace{}, false
+	}
+	return items[m.selected].Workspace, true
+}
+
+func newAgentCommand() string {
+	if command := strings.TrimSpace(os.Getenv("GLINT_AGENT_COMMAND")); command != "" {
+		return command
+	}
+	return "pi"
 }
 
 func (m Model) activateWorkspace(selected workspace.Workspace) (tea.Model, tea.Cmd) {

@@ -61,7 +61,11 @@ func (r itemRenderer) RenderVisible(item visibleItem, selected bool, width int, 
 	if item.Kind == kindAgent && item.AgentIndex >= 0 && item.AgentIndex < len(item.Workspace.Agents) {
 		ag := item.Workspace.Agents[item.AgentIndex]
 		rowWidth := width - r.styles.Title.GetHorizontalFrameSize()
-		left := fmt.Sprintf("  %s %s", agent.Icon(ag.Name), quoteTask(ag.Task))
+		icon := "  "
+		if ag.PID > 0 {
+			icon = " "
+		}
+		left := fmt.Sprintf("%s%s %s", icon, agent.Icon(ag.Name), quoteTask(ag.Task))
 		right := agentTimeStatus(ag)
 		line := util.RightAlignLine(left, right, rowWidth)
 		if selected {

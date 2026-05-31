@@ -80,6 +80,9 @@ func populateMultiplexer(agents []Agent, workspacePath string, programs []multip
 			if usedPrograms[j] || programs[j].ProgramName != agents[i].Name {
 				continue
 			}
+			if agents[i].Pane != "" && agents[i].Pane != programs[j].MultiplexerId {
+				continue
+			}
 			score := multiplexerMatchScore(agents[i], programs[j])
 			if score > bestScore {
 				best = j
@@ -97,6 +100,9 @@ func populateMultiplexer(agents []Agent, workspacePath string, programs []multip
 }
 
 func multiplexerMatchScore(agent Agent, program multiplexer.MultiplexerProgram) int {
+	if agent.Pane == "" && agent.PID <= 0 && (agent.Status == Completed || agent.History || strings.Contains(agent.Source, "history")) {
+		return 0
+	}
 	score := 0
 	strong := false
 	if samePathOrChild(agent.Path, program.Path) {
@@ -135,7 +141,7 @@ func multiplexerMatchScore(agent Agent, program multiplexer.MultiplexerProgram) 
 		score += 100
 		strong = true
 	}
-	if (agent.Status == Completed || agent.History || strings.Contains(agent.Source, "history")) && !strong {
+	if !strong {
 		return 0
 	}
 	return score
