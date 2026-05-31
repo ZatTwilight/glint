@@ -205,6 +205,10 @@ func (m Model) viewportInnerWidth() int {
 	return max(0, m.viewport.Width()-m.viewport.Style.GetHorizontalFrameSize())
 }
 
+func (m Model) viewportInnerHeight() int {
+	return max(0, m.viewport.Height()-m.viewport.Style.GetVerticalFrameSize())
+}
+
 func (m *Model) renderContent() {
 	lines := []string{}
 	m.spans = make([]itemSpan, 0, len(m.state.Workspaces))
@@ -216,8 +220,6 @@ func (m *Model) renderContent() {
 		start := len(lines)
 		rendered := m.renderer.RenderVisible(item, idx == m.selected, m.viewportInnerWidth(), m.state.CurrentWindow)
 		lines = append(lines, strings.Split(rendered, "\n")...)
-		end := len(lines)
-		m.spans = append(m.spans, itemSpan{start: start, end: end})
 
 		if idx != len(items)-1 {
 			next := items[idx+1]
@@ -228,6 +230,8 @@ func (m *Model) renderContent() {
 				lines = append(lines, "")
 			}
 		}
+		end := len(lines)
+		m.spans = append(m.spans, itemSpan{start: start, end: end})
 	}
 	lines = append(lines, "", "", "")
 
@@ -271,13 +275,13 @@ func (m *Model) ensureSelectedVisible() {
 	}
 	span := m.spans[m.selected]
 	top := m.viewport.YOffset()
-	bottom := top + m.viewport.Height()
+	bottom := top + m.viewportInnerHeight()
 	if span.start < top {
 		m.viewport.SetYOffset(span.start)
 		return
 	}
 	if span.end > bottom {
-		m.viewport.SetYOffset(span.end - m.viewport.Height())
+		m.viewport.SetYOffset(span.end - m.viewportInnerHeight())
 	}
 }
 
