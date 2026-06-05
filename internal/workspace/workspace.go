@@ -14,7 +14,15 @@ import (
 	"github.com/ZatTwilight/glint/internal/multiplexer"
 )
 
+type VCSType int
+
 type GitType int
+
+const (
+	VCSNone VCSType = iota
+	VCSGit
+	VCSJujutsu
+)
 
 const (
 	none GitType = iota
@@ -32,6 +40,7 @@ type Workspace struct {
 	ActiveInTmux bool
 	ModifiedAt   time.Time
 	GitType      GitType
+	VCS          VCSType
 	Branch       string
 	Head         string
 	Agents       []agent.Agent
@@ -90,7 +99,8 @@ func scanRoot(root string, activeSessions map[string]bool, activePaths map[strin
 			continue
 		}
 
-		isGitDir := isGitRepository(path)
+		isJJDir := isJJRepository(path)
+		isGitDir := !isJJDir && isGitRepository(path)
 
 		parent := Workspace{
 			Name:         entry.Name(),
@@ -99,14 +109,20 @@ func scanRoot(root string, activeSessions map[string]bool, activePaths map[strin
 			ActiveInTmux: activeSessions[entry.Name()] || activePaths[filepath.Clean(path)],
 			ModifiedAt:   info.ModTime(),
 			GitType:      none,
+			VCS:          VCSNone,
 		}
-		if !isGitDir {
+		if isJJDir {
+			for _, ws := range scanJJWorkspaces(parent, activeSessions, activePaths, programs) {
+				workspaces = append(workspaces, ws)
+			}
+		} else if !isGitDir {
 			parent.Agents = agent.ScanWorkspaceWithPrograms(parent.Name, parent.Path, programs)
 			workspaces = append(workspaces, parent)
 
 			// s, _ := json.MarshalIndent(parent, "	", "  ")
 			// fmt.Printf("Parent	%s\n", string(s))
 		} else {
+			parent.VCS = VCSGit
 			// fmt.Printf("Checking %s\n", path)
 			for _, wt := range scanWorktrees(parent, activeSessions, activePaths, programs) {
 				workspaces = append(workspaces, wt)
@@ -145,6 +161,40 @@ type WorktreeResp struct {
 	ModTime    time.Time
 }
 
+func isJJRepository(path string) bool {
+	jjPath := filepath.Join(path, ".jj")
+	if info, err := os.Stat(jjPath); err == nil && info.IsDir() {
+		return true
+	}
+	cmd := exec.Command("jj", "-R", path, "--ignore-working-copy", "workspace", "root")
+	return cmd.Run() == nil
+}
+
+func jjSharedRepoRoot(workspacePath string) string {
+	jjPath := filepath.Join(workspacePath, ".jj")
+	repoPath := filepath.Join(jjPath, "repo")
+	info, err := os.Stat(repoPath)
+	if err == nil && info.IsDir() {
+		return filepath.Clean(workspacePath)
+	}
+	contents, err := os.ReadFile(repoPath)
+	if err != nil {
+		return filepath.Clean(workspacePath)
+	}
+	sharedRepoPath := strings.TrimSpace(string(contents))
+	if sharedRepoPath == "" {
+		return filepath.Clean(workspacePath)
+	}
+	if !filepath.IsAbs(sharedRepoPath) {
+		sharedRepoPath = filepath.Join(jjPath, sharedRepoPath)
+	}
+	sharedRepoPath = filepath.Clean(sharedRepoPath)
+	if filepath.Base(sharedRepoPath) != "repo" || filepath.Base(filepath.Dir(sharedRepoPath)) != ".jj" {
+		return filepath.Clean(workspacePath)
+	}
+	return filepath.Dir(filepath.Dir(sharedRepoPath))
+}
+
 func isGitRepository(path string) bool {
 	gitPath := filepath.Join(path, ".git")
 	if info, err := os.Stat(gitPath); err == nil {
@@ -162,6 +212,58 @@ func isLinkedWorktree(path string) bool {
 		return false
 	}
 	return info.Mode().IsRegular()
+}
+
+type JJWorkspaceResp struct {
+	Name    string
+	Path    string
+	ModTime time.Time
+}
+
+func scanJJWorkspaces(parent Workspace, activeSessions map[string]bool, activePaths map[string]bool, programs []multiplexer.MultiplexerProgram) []Workspace {
+	repoRoot := jjSharedRepoRoot(parent.Path)
+	out, err := exec.Command("jj", "-R", parent.Path, "--ignore-working-copy", "workspace", "list", "-T", "name ++ \"\\t\" ++ root ++ \"\\n\"").Output()
+	if err != nil {
+		return nil
+	}
+
+	var response []JJWorkspaceResp
+	scanner := bufio.NewScanner(strings.NewReader(string(out)))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "\t", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		path := filepath.Clean(parts[1])
+		info, err := os.Stat(path)
+		if err != nil || !info.IsDir() {
+			continue
+		}
+		response = append(response, JJWorkspaceResp{Name: parts[0], Path: path, ModTime: info.ModTime()})
+	}
+
+	workspaces := make([]Workspace, 0, len(response))
+	for _, jjws := range response {
+		name := filepath.Base(jjws.Path)
+		workspaces = append(workspaces, Workspace{
+			Name:         name,
+			Path:         jjws.Path,
+			Root:         repoRoot,
+			ParentName:   filepath.Base(repoRoot),
+			IsWorktree:   filepath.Clean(jjws.Path) != filepath.Clean(repoRoot),
+			ActiveInTmux: activeSessions[name] || activePaths[filepath.Clean(jjws.Path)],
+			ModifiedAt:   jjws.ModTime,
+			GitType:      none,
+			VCS:          VCSJujutsu,
+			Branch:       jjws.Name,
+			Agents:       agent.ScanWorkspaceWithPrograms(name, jjws.Path, programs),
+		})
+	}
+	return workspaces
 }
 
 func scanWorktrees(parent Workspace, activeSessions map[string]bool, activePaths map[string]bool, programs []multiplexer.MultiplexerProgram) []Workspace {
@@ -231,6 +333,7 @@ func scanWorktrees(parent Workspace, activeSessions map[string]bool, activePaths
 			ActiveInTmux: activeSessions[name] || activePaths[filepath.Clean(wt.Path)],
 			ModifiedAt:   wt.ModTime,
 			GitType:      wt.Kind,
+			VCS:          VCSGit,
 			Branch:       wt.Branch,
 			Head:         wt.Head,
 			Agents:       agent.ScanWorkspaceWithPrograms(name, wt.Path, programs),
@@ -297,9 +400,13 @@ func effectiveModifiedAt(ws Workspace) time.Time {
 	return modified
 }
 
-func groupName(ws Workspace) string {
+func GroupName(ws Workspace) string {
 	if ws.ParentName != "" {
 		return ws.ParentName
 	}
 	return ws.Name
+}
+
+func groupName(ws Workspace) string {
+	return GroupName(ws)
 }

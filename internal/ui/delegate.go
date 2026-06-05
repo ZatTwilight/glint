@@ -84,29 +84,23 @@ func (r itemRenderer) RenderVisible(item visibleItem, selected bool, width int, 
 
 func (r itemRenderer) Render(i workspace.Workspace, selected bool, width int) string {
 	descWidth := width - r.styles.Description.GetHorizontalFrameSize()
-	titleTxt := i.Name
-	if len(i.Agents) > 0 {
-		marker := "▾"
-		if r.collapsed[i.Path] {
-			marker = "▸"
-		}
-		titleTxt = fmt.Sprintf("%s %s", marker, titleTxt)
+	titleTxt := workspaceTitle(i, len(i.Agents) > 0, r.collapsed[i.Path])
+	icon := ""
+	switch i.VCS {
+	case workspace.VCSJujutsu:
+		icon = "󱗆 "
+	case workspace.VCSGit:
+		icon = "󰊢 "
 	}
+	titleTxt = util.RightAlignLine(titleTxt, r.styles.Description.Render(icon + " " + relativeTime(workspaceActivityTime(i))), descWidth)
 
 	pathParts := strings.Split(i.Path, "/")
 	shortPath := strings.Join(pathParts[len(pathParts)-2:], "/")
-	leftDesc := shortPath
+	leftParts := []string{shortPath}
 	if len(i.Agents) > 0 {
-		leftDesc = fmt.Sprintf("%s · %d agent%s", shortPath, len(i.Agents), plural(len(i.Agents)))
+		leftParts = append(leftParts, fmt.Sprintf("%d agent%s", len(i.Agents), plural(len(i.Agents))))
 	}
-	descTxt := util.RightAlignLine(leftDesc, relativeTime(workspaceActivityTime(i)), descWidth)
-
-	// if i.GitType != 0 {
-	// 	titleTxt = "󰊢  " + titleTxt
-	// }
-	// if i.ActiveInTmux {
-	// 	titleTxt = "  " + i.Name
-	// }
+	descTxt := strings.Join(leftParts, " · ")
 
 	title := r.styles.Title.Render(titleTxt)
 	desc := r.styles.Description.Render(descTxt)
@@ -117,15 +111,21 @@ func (r itemRenderer) Render(i workspace.Workspace, selected bool, width int) st
 
 	lines := []string{title, desc}
 
-	// Playground for dynamic heights:
-	// Add/remove lines here per item without changing any global Height().
-	// For example:
-	//
-	// if i.IsWorktree {
-	// 	lines = append(lines, r.styles.Description.Render("worktree: "+i.Path))
-	// }
-
 	return strings.Join(lines, "\n")
+}
+
+func workspaceTitle(ws workspace.Workspace, hasAgents bool, collapsed bool) string {
+	marker := " "
+	if hasAgents {
+		marker = "▾"
+		if collapsed {
+			marker = "▸"
+		}
+	}
+	if ws.IsWorktree {
+		return fmt.Sprintf("%s %s/%s", marker, ws.ParentName, ws.Name)
+	}
+	return fmt.Sprintf("%s %s", marker, ws.Name)
 }
 
 func workspaceActivityTime(ws workspace.Workspace) time.Time {

@@ -1748,45 +1748,6 @@ func (m Model) sessionForPathOrName(path, name string) *multiplexer.Session {
 	return &session
 }
 
-func sessionNameForWorkspace(ws workspace.Workspace, session multiplexer.Session, active bool) string {
-	if active {
-		return session.Name
-	}
-	if ws.IsWorktree && ws.ParentName != "" {
-		return ws.ParentName + "/" + ws.Name
-	}
-	return ws.Name
-}
-
-func otherSessions(sessions []multiplexer.Session, workspaceSessions map[string]bool) []multiplexer.Session {
-	other := make([]multiplexer.Session, 0, len(sessions))
-	for _, session := range sessions {
-		if !workspaceSessions[session.Name] {
-			other = append(other, session)
-		}
-	}
-	return other
-}
-
-func sessionSummary(session multiplexer.Session) string {
-	parts := []string{}
-	if session.Attached {
-		parts = append(parts, "attached")
-	} else {
-		parts = append(parts, "detached")
-	}
-	if session.Windows > 0 {
-		parts = append(parts, fmt.Sprintf("%d window%s", session.Windows, plural(session.Windows)))
-	}
-	if !session.Activity.IsZero() {
-		parts = append(parts, relativeTime(session.Activity))
-	}
-	if session.Path != "" {
-		parts = append(parts, filepath.Base(session.Path))
-	}
-	return strings.Join(parts, " · ")
-}
-
 func relativeTime(t time.Time) string {
 	if t.IsZero() {
 		return ""

@@ -104,7 +104,7 @@ Hook status is merged with tmux pane detection and wins over activity-based gues
 - Detects tmux / zellij / plain terminal
 - Lists directories under configured workspace roots
 - Sorts active tmux sessions first, then newest directories first
-- Shows git worktrees as children of their parent project
+- Shows Git worktrees and Jujutsu (`jj`) workspaces as children of their parent project
 - Lists tmux sessions when running inside tmux
 - Switches to selected tmux sessions with `Enter`
 - Creates missing tmux sessions for selected projects, then switches to them
