@@ -58,7 +58,12 @@ type TmuxPane struct {
 func (i Info) CurrentWindow() (string, error) {
 	switch i.Kind {
 	case Tmux:
-		out, err := exec.Command("tmux", "display-message", "-p", "#{window_id}").Output()
+		args := []string{"display-message", "-p"}
+		if paneID := strings.TrimSpace(os.Getenv("TMUX_PANE")); paneID != "" {
+			args = append(args, "-t", paneID)
+		}
+		args = append(args, "#{window_id}")
+		out, err := exec.Command("tmux", args...).Output()
 		if err != nil {
 			return "", err
 		}
@@ -73,7 +78,12 @@ func (i Info) CurrentWindow() (string, error) {
 func (i Info) CurrentSession() (string, error) {
 	switch i.Kind {
 	case Tmux:
-		out, err := exec.Command("tmux", "display-message", "-p", "#{session_name}").Output()
+		args := []string{"display-message", "-p"}
+		if paneID := strings.TrimSpace(os.Getenv("TMUX_PANE")); paneID != "" {
+			args = append(args, "-t", paneID)
+		}
+		args = append(args, "#{session_name}")
+		out, err := exec.Command("tmux", args...).Output()
 		if err != nil {
 			return "", err
 		}
@@ -161,6 +171,9 @@ func SwitchPaneById(kind Kind, paneId string) error {
 }
 
 func CurrentPaneID() (string, error) {
+	if paneID := strings.TrimSpace(os.Getenv("TMUX_PANE")); paneID != "" {
+		return paneID, nil
+	}
 	out, err := exec.Command("tmux", "display-message", "-p", "#{pane_id}").Output()
 	if err != nil {
 		return "", err
@@ -201,8 +214,36 @@ func TmuxPanesAll() ([]TmuxPane, error) {
 }
 
 func TmuxPanesInCurrentWindow() ([]PaneGeometry, error) {
+	return tmuxPanesInTarget("")
+}
+
+func TmuxPanesInWindowOfPane(paneID string) ([]PaneGeometry, error) {
+	windowID, err := PaneWindowID(paneID)
+	if err != nil {
+		return nil, err
+	}
+	return tmuxPanesInTarget(windowID)
+}
+
+func PaneWindowID(paneID string) (string, error) {
+	out, err := exec.Command("tmux", "display-message", "-p", "-t", paneID, "#{window_id}").Output()
+	if err != nil {
+		return "", err
+	}
+	windowID := strings.TrimSpace(string(out))
+	if windowID == "" {
+		return "", fmt.Errorf("no window found for pane %s", paneID)
+	}
+	return windowID, nil
+}
+
+func tmuxPanesInTarget(target string) ([]PaneGeometry, error) {
 	format := strings.Join([]string{"#{pane_id}", "#{pane_left}", "#{pane_top}", "#{pane_width}", "#{pane_height}"}, "\t")
-	out, err := exec.Command("tmux", "list-panes", "-F", format).Output()
+	args := []string{"list-panes", "-F", format}
+	if strings.TrimSpace(target) != "" {
+		args = append(args, "-t", target)
+	}
+	out, err := exec.Command("tmux", args...).Output()
 	if err != nil {
 		return nil, err
 	}
@@ -229,7 +270,7 @@ func TmuxPanesInCurrentWindow() ([]PaneGeometry, error) {
 }
 
 func FindPaneRightOf(sidebarPaneID string) (string, error) {
-	panes, err := TmuxPanesInCurrentWindow()
+	panes, err := TmuxPanesInWindowOfPane(sidebarPaneID)
 	if err != nil {
 		return "", err
 	}
@@ -268,6 +309,107 @@ func FindPaneRightOf(sidebarPaneID string) (string, error) {
 		return "", fmt.Errorf("no pane found to the right of sidebar pane %s", sidebarPaneID)
 	}
 	return panes[bestIdx].ID, nil
+}
+
+func SidebarPaneLayout(sidebarPaneID string) (width int, before bool, err error) {
+	panes, err := TmuxPanesInWindowOfPane(sidebarPaneID)
+	if err != nil {
+		return 0, true, err
+	}
+	for _, pane := range panes {
+		if pane.ID == sidebarPaneID {
+			return pane.Width, pane.Left == 0, nil
+		}
+	}
+	return 0, true, fmt.Errorf("sidebar pane %s not found in current window", sidebarPaneID)
+}
+
+func ActivePaneForSession(session string) (string, error) {
+	if strings.TrimSpace(session) == "" {
+		return "", fmt.Errorf("session is required")
+	}
+	out, err := exec.Command("tmux", "display-message", "-p", "-t", session, "#{pane_id}").Output()
+	if err != nil {
+		return "", err
+	}
+	paneID := strings.TrimSpace(string(out))
+	if paneID == "" {
+		return "", fmt.Errorf("no active pane found for session %s", session)
+	}
+	return paneID, nil
+}
+
+func SwitchSessionWithSidebar(kind Kind, targetSession string) error {
+	targetSession = strings.TrimSpace(targetSession)
+	if targetSession == "" {
+		return fmt.Errorf("session is required")
+	}
+	if kind != Tmux {
+		return SwitchSession(kind, targetSession)
+	}
+	targetPaneID, err := ActivePaneForSession(targetSession)
+	if err != nil {
+		return err
+	}
+	return SwitchPaneWithSidebar(kind, targetSession, "", targetPaneID)
+}
+
+func SwitchPaneWithSidebar(kind Kind, targetSession, targetWindow, targetPane string) error {
+	if kind != Tmux {
+		return SwitchPane(kind, targetSession, targetWindow, targetPane)
+	}
+	targetSession = strings.TrimSpace(targetSession)
+	targetPane = strings.TrimSpace(targetPane)
+	if targetSession == "" {
+		return fmt.Errorf("session is required")
+	}
+	if targetPane == "" {
+		return SwitchSessionWithSidebar(kind, targetSession)
+	}
+
+	sidebarPaneID, err := CurrentPaneID()
+	if err != nil {
+		return err
+	}
+	currentSession, err := Detect().CurrentSession()
+	if err == nil && currentSession == targetSession {
+		return SwitchPane(kind, targetSession, targetWindow, targetPane)
+	}
+
+	width, before, err := SidebarPaneLayout(sidebarPaneID)
+	if err != nil || width <= 0 {
+		width = 36
+		before = true
+	}
+	if targetPane != sidebarPaneID {
+		args := sidebarJoinPaneArgs(sidebarPaneID, targetPane, width, before, true)
+		if err := runTmux(args...); err != nil {
+			fallbackArgs := sidebarJoinPaneArgs(sidebarPaneID, targetPane, width, before, false)
+			if fallbackErr := runTmux(fallbackArgs...); fallbackErr != nil {
+				return err
+			}
+		}
+	}
+	return SwitchPane(kind, targetSession, targetWindow, targetPane)
+}
+
+func sidebarJoinPaneArgs(sidebarPaneID, targetPaneID string, width int, before bool, fullSize bool) []string {
+	args := []string{"join-pane", "-d", "-h"}
+	if fullSize {
+		args = append(args, "-f")
+	}
+	if before {
+		args = append(args, "-b")
+	}
+	return append(args, "-l", strconv.Itoa(width), "-s", sidebarPaneID, "-t", targetPaneID)
+}
+
+func MarkCurrentPaneSidebar() error {
+	paneID, err := CurrentPaneID()
+	if err != nil {
+		return err
+	}
+	return setPaneRole(paneID, "sidebar")
 }
 
 func SwapPanes(sourcePaneID, targetPaneID string) error {

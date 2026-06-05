@@ -91,6 +91,10 @@ func shellQuote(value string) string {
 }
 
 func runApp(sidebarMode bool) {
+	if sidebarMode {
+		_ = multiplexer.MarkCurrentPaneSidebar()
+	}
+
 	cfg, err := config.Load()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "load config: %v\n", err)

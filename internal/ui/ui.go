@@ -330,7 +330,7 @@ func (m Model) activateSelected() (tea.Model, tea.Cmd) {
 			if m.state.SidebarMode {
 				canSwap := ag.Session == "" || ag.Session == m.state.CurrentSession || ag.Session == multiplexer.ShelfSessionName
 				if !canSwap {
-					if err := multiplexer.SwitchPaneById(m.state.Multiplexer.Kind, ag.Pane); err != nil {
+					if err := multiplexer.SwitchPaneWithSidebar(m.state.Multiplexer.Kind, ag.Session, ag.Window, ag.Pane); err != nil {
 						m.status = fmt.Sprintf("Switch failed: %v -- %+v, %+v, %+v", err, ag.Session, ag.Window, ag.Pane)
 						return m, nil
 					}
@@ -508,7 +508,11 @@ func (m Model) activateWorkspace(selected workspace.Workspace) (tea.Model, tea.C
 		}
 	}
 
-	if err := multiplexer.SwitchSession(m.state.Multiplexer.Kind, sessionName); err != nil {
+	switchSession := multiplexer.SwitchSession
+	if m.state.SidebarMode {
+		switchSession = multiplexer.SwitchSessionWithSidebar
+	}
+	if err := switchSession(m.state.Multiplexer.Kind, sessionName); err != nil {
 		m.status = fmt.Sprintf("Switch failed: %v", err)
 		return m, nil
 	}
