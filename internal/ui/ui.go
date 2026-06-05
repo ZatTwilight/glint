@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
@@ -14,6 +16,7 @@ import (
 	"github.com/ZatTwilight/glint/internal/theme"
 	"github.com/ZatTwilight/glint/internal/util"
 	"github.com/ZatTwilight/glint/internal/workspace"
+	"github.com/sahilm/fuzzy"
 )
 
 type State struct {
@@ -29,14 +32,18 @@ type State struct {
 type RefreshFunc func() (State, error)
 
 type Model struct {
-	state    State
-	viewport viewport.Model
-	selected int
-	status   string
-	refresh  RefreshFunc
-	styles   theme.Styles
-	renderer itemRenderer
-	spans    []itemSpan
+	state         State
+	viewport      viewport.Model
+	selected      int
+	status        string
+	refresh       RefreshFunc
+	styles        theme.Styles
+	renderer      itemRenderer
+	spans         []itemSpan
+	searchActive  bool
+	searchQuery   string
+	paletteActive bool
+	paletteQuery  string
 }
 
 type itemKind int
@@ -55,6 +62,15 @@ type visibleItem struct {
 type itemSpan struct {
 	start int
 	end   int
+}
+
+type paletteTarget struct {
+	Item     visibleItem
+	Label    string
+	Title    string
+	Subtitle string
+	Search   string
+	Score    int
 }
 
 func New(state State, refresh RefreshFunc) Model {
@@ -94,6 +110,12 @@ type animationTickMsg time.Time
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		if m.paletteActive {
+			return m.updatePalette(msg)
+		}
+		if m.searchActive {
+			return m.updateSearch(msg)
+		}
 		switch msg.String() {
 		case "q", "ctrl+c", "esc":
 			return m, tea.Quit
@@ -101,6 +123,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.activateSelected()
 		case "ctrl+x":
 			return m.removeSession()
+		case "/":
+			m.searchActive = true
+			m.status = "Search workspaces"
+			m.selected = 0
+			m.renderContent()
+			m.ensureSelectedVisible()
+			return m, nil
+		case "ctrl+p":
+			m.paletteActive = true
+			m.status = "Command palette"
+			m.selected = 0
+			m.renderContent()
+			m.ensureSelectedVisible()
+			return m, nil
 		case " ", "tab", "c":
 			m.toggleSelected()
 			return m, nil
@@ -147,9 +183,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		idx := m.selected
 		m.state = msg.state
+		if m.searchActive {
+			m.updateSearchStatus()
+		}
+		if m.paletteActive {
+			m.updatePaletteStatus()
+		}
 		m.rebuildItems()
-		if len(m.visibleItems()) > 0 {
-			m.selected = min(idx, len(m.visibleItems())-1)
+		if m.currentItemCount() > 0 {
+			m.selected = min(idx, m.currentItemCount()-1)
 			m.renderContent()
 			m.ensureSelectedVisible()
 		}
@@ -158,6 +200,149 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.viewport, cmd = m.viewport.Update(msg)
 	return m, cmd
+}
+
+func (m Model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
+	case "esc":
+		m.searchActive = false
+		m.searchQuery = ""
+		m.status = "Enter switches or creates sessions"
+		m.selected = min(m.selected, max(0, len(m.visibleItems())-1))
+		m.renderContent()
+		m.ensureSelectedVisible()
+		return m, nil
+	case "enter":
+		return m.activateSelected()
+	case "up":
+		m.moveSelection(-1)
+		return m, nil
+	case "down":
+		m.moveSelection(1)
+		return m, nil
+	case "home":
+		m.selected = 0
+		m.renderContent()
+		m.ensureSelectedVisible()
+		return m, nil
+	case "end":
+		m.selected = max(0, len(m.visibleItems())-1)
+		m.renderContent()
+		m.ensureSelectedVisible()
+		return m, nil
+	case "backspace", "ctrl+h":
+		m.searchQuery = dropLastRune(m.searchQuery)
+		m.selected = 0
+		m.updateSearchStatus()
+		m.renderContent()
+		m.ensureSelectedVisible()
+		return m, nil
+	case "ctrl+u":
+		m.searchQuery = ""
+		m.selected = 0
+		m.updateSearchStatus()
+		m.renderContent()
+		m.ensureSelectedVisible()
+		return m, nil
+	}
+
+	if printableKey(msg.String()) {
+		m.searchQuery += msg.String()
+		m.selected = 0
+		m.updateSearchStatus()
+		m.renderContent()
+		m.ensureSelectedVisible()
+	}
+	return m, nil
+}
+
+func (m *Model) updateSearchStatus() {
+	count := len(m.visibleItems())
+	if strings.TrimSpace(m.searchQuery) == "" {
+		m.status = "Search workspaces"
+		return
+	}
+	m.status = fmt.Sprintf("Search: /%s · %d match%s", m.searchQuery, count, plural(count))
+}
+
+func (m Model) updatePalette(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
+	case "esc":
+		m.paletteActive = false
+		m.paletteQuery = ""
+		m.status = "Enter switches or creates sessions"
+		m.selected = min(m.selected, max(0, len(m.visibleItems())-1))
+		m.renderContent()
+		m.ensureSelectedVisible()
+		return m, nil
+	case "enter":
+		return m.activatePaletteSelected()
+	case "up":
+		m.movePaletteSelection(-1)
+		return m, nil
+	case "down":
+		m.movePaletteSelection(1)
+		return m, nil
+	case "home":
+		m.selected = 0
+		m.renderContent()
+		m.ensureSelectedVisible()
+		return m, nil
+	case "end":
+		m.selected = max(0, len(m.paletteTargets())-1)
+		m.renderContent()
+		m.ensureSelectedVisible()
+		return m, nil
+	case "backspace", "ctrl+h":
+		m.paletteQuery = dropLastRune(m.paletteQuery)
+		m.selected = 0
+		m.updatePaletteStatus()
+		m.renderContent()
+		m.ensureSelectedVisible()
+		return m, nil
+	case "ctrl+u":
+		m.paletteQuery = ""
+		m.selected = 0
+		m.updatePaletteStatus()
+		m.renderContent()
+		m.ensureSelectedVisible()
+		return m, nil
+	}
+
+	if printableKey(msg.String()) {
+		m.paletteQuery += msg.String()
+		m.selected = 0
+		m.updatePaletteStatus()
+		m.renderContent()
+		m.ensureSelectedVisible()
+	}
+	return m, nil
+}
+
+func (m *Model) updatePaletteStatus() {
+	count := len(m.paletteTargets())
+	if strings.TrimSpace(m.paletteQuery) == "" {
+		m.status = fmt.Sprintf("Command palette · %d target%s", count, plural(count))
+		return
+	}
+	m.status = fmt.Sprintf("Palette: %s · %d match%s", m.paletteQuery, count, plural(count))
+}
+
+func printableKey(key string) bool {
+	runes := []rune(key)
+	return len(runes) == 1 && unicode.IsPrint(runes[0])
+}
+
+func dropLastRune(s string) string {
+	runes := []rune(s)
+	if len(runes) == 0 {
+		return ""
+	}
+	return string(runes[:len(runes)-1])
 }
 
 func initialRefreshTick() tea.Cmd {
@@ -183,15 +368,22 @@ func (m Model) doRefresh() tea.Cmd {
 }
 
 func (m *Model) rebuildItems() {
-	if m.selected >= len(m.state.Workspaces) {
-		m.selected = max(0, len(m.state.Workspaces)-1)
+	if m.selected >= m.currentItemCount() {
+		m.selected = max(0, m.currentItemCount()-1)
 	}
 	m.renderContent()
 }
 
+func (m Model) currentItemCount() int {
+	if m.paletteActive {
+		return len(m.paletteTargets())
+	}
+	return len(m.visibleItems())
+}
+
 func (m Model) getItems() []workspace.Workspace {
 	return util.Filter(m.state.Workspaces, func(w workspace.Workspace) bool {
-		return w.GitType != 1
+		return w.GitType != 1 && m.workspaceMatchesSearch(w)
 	})
 }
 
@@ -200,14 +392,190 @@ func (m Model) visibleItems() []visibleItem {
 	items := make([]visibleItem, 0, len(workspaces))
 	for _, ws := range workspaces {
 		items = append(items, visibleItem{Kind: kindWorkspace, Workspace: ws, AgentIndex: -1})
-		if len(ws.Agents) == 0 || m.renderer.IsCollapsed(ws.Path) {
+		if len(ws.Agents) == 0 || (m.renderer.IsCollapsed(ws.Path) && (!m.searchActive || strings.TrimSpace(m.searchQuery) == "")) {
 			continue
 		}
 		for idx := range ws.Agents {
+			if m.searchActive && strings.TrimSpace(m.searchQuery) != "" && !m.agentMatchesSearch(ws, idx) && !fuzzyMatch(m.searchQuery, workspaceSearchText(ws)) {
+				continue
+			}
 			items = append(items, visibleItem{Kind: kindAgent, Workspace: ws, AgentIndex: idx})
 		}
 	}
 	return items
+}
+
+func (m Model) paletteTargets() []paletteTarget {
+	query := strings.TrimSpace(m.paletteQuery)
+	targets := []paletteTarget{}
+	for _, ws := range m.state.Workspaces {
+		if ws.GitType == 1 {
+			continue
+		}
+		subtitle := paletteWorkspaceSubtitle(ws)
+		target := paletteTarget{
+			Item:     visibleItem{Kind: kindWorkspace, Workspace: ws, AgentIndex: -1},
+			Label:    "workspace",
+			Title:    ws.Name,
+			Subtitle: subtitle,
+			Search:   strings.Join([]string{"workspace", ws.Name, subtitle, workspaceSearchText(ws)}, " "),
+		}
+		if score, ok := paletteTargetScore(query, target); ok {
+			target.Score = score + 25
+			targets = append(targets, target)
+		}
+		for idx, ag := range ws.Agents {
+			title := quoteTask(ag.Task)
+			subtitle := strings.Join(nonEmpty([]string{ag.Name, ws.Name, string(ag.Status), relativeTime(ag.Activity)}), " · ")
+			target := paletteTarget{
+				Item:     visibleItem{Kind: kindAgent, Workspace: ws, AgentIndex: idx},
+				Label:    "agent",
+				Title:    title,
+				Subtitle: subtitle,
+				Search:   strings.Join([]string{"agent", ag.Name, ag.Task, string(ag.Status), ag.Source, ag.Session, ag.Pane, workspaceSearchText(ws)}, " "),
+			}
+			if score, ok := paletteTargetScore(query, target); ok {
+				target.Score = score
+				targets = append(targets, target)
+			}
+		}
+	}
+	if query != "" {
+		sort.SliceStable(targets, func(i, j int) bool {
+			if targets[i].Score != targets[j].Score {
+				return targets[i].Score > targets[j].Score
+			}
+			if targets[i].Item.Kind != targets[j].Item.Kind {
+				return targets[i].Item.Kind == kindWorkspace
+			}
+			return targets[i].Title < targets[j].Title
+		})
+	}
+	return targets
+}
+
+func paletteTargetScore(query string, target paletteTarget) (int, bool) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return 0, true
+	}
+	score := 0
+	score = max(score, weightedMatchScore(query, target.Title, 100))
+	score = max(score, weightedMatchScore(query, target.Subtitle, 35))
+	score = max(score, weightedMatchScore(query, target.Label, 25))
+	score = max(score, weightedMatchScore(query, target.Search, 10))
+	return score, score > 0
+}
+
+func weightedMatchScore(query, text string, weight int) int {
+	query = strings.ToLower(strings.TrimSpace(query))
+	text = strings.ToLower(strings.TrimSpace(text))
+	if query == "" || text == "" {
+		return 0
+	}
+	best := 0
+	if text == query {
+		best = max(best, 100*weight)
+	}
+	if idx := strings.Index(text, query); idx >= 0 {
+		best = max(best, 80*weight-indexPenalty(idx))
+	}
+	for _, token := range strings.FieldsFunc(text, searchTokenSeparator) {
+		if token == "" {
+			continue
+		}
+		switch {
+		case token == query:
+			best = max(best, 95*weight)
+		case strings.HasPrefix(token, query):
+			best = max(best, 75*weight-len(token))
+		case strings.Contains(token, query):
+			best = max(best, 60*weight-len(token))
+		case len(token) >= len(query) && len(fuzzy.Find(query, []string{token})) > 0:
+			best = max(best, 25*weight-len(token))
+		}
+	}
+	return max(best, 0)
+}
+
+func indexPenalty(idx int) int {
+	if idx > 80 {
+		return 80
+	}
+	return idx
+}
+
+func paletteWorkspaceSubtitle(ws workspace.Workspace) string {
+	parts := []string{ws.Path}
+	if ws.ParentName != "" {
+		parts = append(parts, ws.ParentName)
+	}
+	if ws.Branch != "" {
+		parts = append(parts, ws.Branch)
+	}
+	if len(ws.Agents) > 0 {
+		parts = append(parts, fmt.Sprintf("%d agent%s", len(ws.Agents), plural(len(ws.Agents))))
+	}
+	return strings.Join(parts, " · ")
+}
+
+func nonEmpty(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+func (m Model) workspaceMatchesSearch(ws workspace.Workspace) bool {
+	query := strings.TrimSpace(m.searchQuery)
+	if !m.searchActive || query == "" {
+		return true
+	}
+	if fuzzyMatch(query, workspaceSearchText(ws)) {
+		return true
+	}
+	for idx := range ws.Agents {
+		if m.agentMatchesSearch(ws, idx) {
+			return true
+		}
+	}
+	return false
+}
+
+func (m Model) agentMatchesSearch(ws workspace.Workspace, idx int) bool {
+	if idx < 0 || idx >= len(ws.Agents) {
+		return false
+	}
+	ag := ws.Agents[idx]
+	return fuzzyMatch(m.searchQuery, strings.Join([]string{ag.Name, ag.Task, string(ag.Status), ag.Source, ag.Session, ag.Pane}, " "))
+}
+
+func workspaceSearchText(ws workspace.Workspace) string {
+	return strings.Join([]string{ws.Name, ws.Path, ws.Root, ws.ParentName, ws.Branch, ws.Head}, " ")
+}
+
+func fuzzyMatch(query, text string) bool {
+	query = strings.ToLower(strings.TrimSpace(query))
+	text = strings.ToLower(strings.TrimSpace(text))
+	if query == "" {
+		return true
+	}
+	if strings.Contains(text, query) {
+		return true
+	}
+	for _, token := range strings.FieldsFunc(text, searchTokenSeparator) {
+		if len(token) >= len(query) && len(fuzzy.Find(query, []string{token})) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func searchTokenSeparator(r rune) bool {
+	return !(unicode.IsLetter(r) || unicode.IsDigit(r))
 }
 
 func (m Model) viewportInnerWidth() int {
@@ -219,6 +587,10 @@ func (m Model) viewportInnerHeight() int {
 }
 
 func (m *Model) renderContent() {
+	if m.paletteActive {
+		m.renderPaletteContent()
+		return
+	}
 	lines := []string{}
 	m.spans = make([]itemSpan, 0, len(m.state.Workspaces))
 	items := m.visibleItems()
@@ -247,12 +619,50 @@ func (m *Model) renderContent() {
 	m.viewport.SetContent(strings.Join(lines, "\n"))
 }
 
+func (m *Model) renderPaletteContent() {
+	targets := m.paletteTargets()
+	lines := []string{}
+	m.spans = make([]itemSpan, 0, len(targets))
+	if len(targets) == 0 {
+		lines = append(lines, "No palette matches")
+	}
+	for idx, target := range targets {
+		start := len(lines)
+		lines = append(lines, strings.Split(m.renderPaletteTarget(target, idx == m.selected), "\n")...)
+		if idx != len(targets)-1 {
+			lines = append(lines, "")
+		}
+		m.spans = append(m.spans, itemSpan{start: start, end: len(lines)})
+	}
+	lines = append(lines, "", "", "")
+	m.viewport.SetContent(strings.Join(lines, "\n"))
+}
+
+func (m Model) renderPaletteTarget(target paletteTarget, selected bool) string {
+	label := m.styles.Badge.Render(target.Label)
+	title := label + " " + target.Title
+	if selected {
+		return strings.Join([]string{m.renderer.styles.SelectedTitle.Render(title), m.renderer.styles.SelectedDesc.Render(target.Subtitle)}, "\n")
+	}
+	return strings.Join([]string{m.renderer.styles.Title.Render(title), m.renderer.styles.Description.Render(target.Subtitle)}, "\n")
+}
+
 func (m *Model) moveSelection(delta int) {
 	items := m.visibleItems()
 	if len(items) == 0 {
 		return
 	}
 	m.selected = min(max(0, m.selected+delta), len(items)-1)
+	m.renderContent()
+	m.ensureSelectedVisible()
+}
+
+func (m *Model) movePaletteSelection(delta int) {
+	targets := m.paletteTargets()
+	if len(targets) == 0 {
+		return
+	}
+	m.selected = min(max(0, m.selected+delta), len(targets)-1)
 	m.renderContent()
 	m.ensureSelectedVisible()
 }
@@ -316,13 +726,25 @@ func (m *Model) ensureSelectedVisible() {
 func (m Model) viewHeader() string {
 	badge := m.styles.Badge.Render(strings.ToUpper(string(m.state.Multiplexer.Kind)))
 	header := fmt.Sprintf("%s  %d projects", badge, len(m.state.Workspaces))
+	if m.searchActive {
+		header = fmt.Sprintf("%s  /%s", header, m.searchQuery)
+	}
+	if m.paletteActive {
+		header = fmt.Sprintf("%s  > %s", header, m.paletteQuery)
+	}
 	return m.styles.Header.Render(header)
 }
 
 func (m Model) viewFooter() string {
-	help := "↑/↓ move · c/space collapse · Enter switch/create · n new chat · b shelve · ctrl+x delete · q quit"
+	help := "↑/↓ move · / search · ctrl+p palette · c/space collapse · Enter switch/create · n new chat · b shelve · ctrl+x delete · q quit"
 	if m.state.SidebarMode {
-		help = "↑/↓ move · Enter bring/switch · b shelve · ctrl+x delete · c collapse · q quit"
+		help = "↑/↓ move · / search · ctrl+p palette · Enter bring/switch · b shelve · ctrl+x delete · c collapse · q quit"
+	}
+	if m.searchActive {
+		help = "type to filter · ↑/↓ move · Enter select · ctrl+u clear · Esc close search"
+	}
+	if m.paletteActive {
+		help = "type command · ↑/↓ move · Enter run/open · ctrl+u clear · Esc close palette"
 	}
 	content := fmt.Sprintf("status: %s\n%s", m.status, help)
 	return m.styles.Help.Render(content)
@@ -342,7 +764,19 @@ func (m Model) activateSelected() (tea.Model, tea.Cmd) {
 		m.status = "Pick a project"
 		return m, nil
 	}
-	item := items[m.selected]
+	return m.activateItem(items[m.selected])
+}
+
+func (m Model) activatePaletteSelected() (tea.Model, tea.Cmd) {
+	targets := m.paletteTargets()
+	if len(targets) == 0 || m.selected < 0 || m.selected >= len(targets) {
+		m.status = "Pick a command"
+		return m, nil
+	}
+	return m.activateItem(targets[m.selected].Item)
+}
+
+func (m Model) activateItem(item visibleItem) (tea.Model, tea.Cmd) {
 	if item.Kind == kindAgent {
 		ag := item.Workspace.Agents[item.AgentIndex]
 		if ag.Pane != "" {
