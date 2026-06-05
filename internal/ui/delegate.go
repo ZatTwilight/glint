@@ -68,6 +68,12 @@ func (r itemRenderer) RenderVisible(item visibleItem, selected bool, width int, 
 		if ag.PID > 0 {
 			icon = " "
 		}
+		if item.AgentIndex == item.AgentStart && item.AgentStart > 0 {
+			icon = "↑ "
+		}
+		if item.AgentIndex == item.AgentEnd-1 && item.AgentEnd < len(item.Workspace.Agents) {
+			icon = "↓ "
+		}
 		left := fmt.Sprintf("%s%s %s", icon, agent.Icon(ag.Name), quoteTask(ag.Task))
 		right := agentTimeStatus(ag)
 		line := util.RightAlignLine(left, right, rowWidth)
@@ -92,7 +98,7 @@ func (r itemRenderer) Render(i workspace.Workspace, selected bool, width int) st
 	case workspace.VCSGit:
 		icon = "󰊢 "
 	}
-	titleTxt = util.RightAlignLine(titleTxt, r.styles.Description.Render(icon + " " + relativeTime(workspaceActivityTime(i))), descWidth)
+	titleTxt = util.RightAlignLine(titleTxt, r.styles.Description.Render(icon+" "+relativeTime(workspaceActivityTime(i))), descWidth)
 
 	pathParts := strings.Split(i.Path, "/")
 	shortPath := strings.Join(pathParts[len(pathParts)-2:], "/")

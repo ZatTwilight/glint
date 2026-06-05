@@ -34,3 +34,38 @@ func TestMoveWorkspaceSelectionSkipsAgents(t *testing.T) {
 		t.Fatalf("previous project selected %q, want bravo", got)
 	}
 }
+
+func TestAgentListIsCappedAndScrollsWithinWorkspace(t *testing.T) {
+	agents := make([]agent.Agent, 7)
+	for idx := range agents {
+		agents[idx] = agent.Agent{Name: "pi", Task: string(rune('a' + idx))}
+	}
+	m := New(State{Workspaces: []workspace.Workspace{
+		{Name: "alpha", Path: "/tmp/alpha", Agents: agents},
+		{Name: "bravo", Path: "/tmp/bravo"},
+	}}, nil)
+
+	items := m.visibleItems()
+	if got, want := len(items), 7; got != want {
+		t.Fatalf("visible item count = %d, want %d", got, want)
+	}
+	if got, want := items[5].AgentIndex, 4; got != want {
+		t.Fatalf("last visible agent index = %d, want %d", got, want)
+	}
+
+	m.selected = 5
+	m.moveSelection(1)
+	items = m.visibleItems()
+	if got, want := items[m.selected].AgentIndex, 5; got != want {
+		t.Fatalf("selected agent after internal scroll = %d, want %d", got, want)
+	}
+	if got, want := m.agentOffsets["/tmp/alpha"], 1; got != want {
+		t.Fatalf("agent offset = %d, want %d", got, want)
+	}
+
+	m.moveSelection(-1)
+	items = m.visibleItems()
+	if got, want := items[m.selected].AgentIndex, 4; got != want {
+		t.Fatalf("selected agent after reverse scroll = %d, want %d", got, want)
+	}
+}

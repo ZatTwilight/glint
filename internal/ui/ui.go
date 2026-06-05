@@ -47,6 +47,7 @@ type Model struct {
 	paletteQuery  string
 	worktreeFlow  worktreeFlow
 	cleanupFlow   cleanupFlow
+	agentOffsets  map[string]int
 }
 
 type itemKind int
@@ -56,10 +57,14 @@ const (
 	kindAgent
 )
 
+const maxVisibleAgents = 5
+
 type visibleItem struct {
 	Kind       itemKind
 	Workspace  workspace.Workspace
 	AgentIndex int
+	AgentStart int
+	AgentEnd   int
 }
 
 type itemSpan struct {
@@ -142,12 +147,13 @@ func New(state State, refresh RefreshFunc) Model {
 	}
 
 	m := Model{
-		state:    state,
-		viewport: vp,
-		status:   status,
-		refresh:  refresh,
-		styles:   styles,
-		renderer: newItemRenderer(state.Theme, loadCollapsedProjects()),
+		state:        state,
+		viewport:     vp,
+		status:       status,
+		refresh:      refresh,
+		styles:       styles,
+		renderer:     newItemRenderer(state.Theme, loadCollapsedProjects()),
+		agentOffsets: map[string]int{},
 	}
 	m.rebuildItems()
 	return m
@@ -952,11 +958,13 @@ func (m Model) visibleItems() []visibleItem {
 		if len(ws.Agents) == 0 || (m.renderer.IsCollapsed(ws.Path) && (!m.searchActive || strings.TrimSpace(m.searchQuery) == "")) {
 			continue
 		}
-		for idx := range ws.Agents {
+		start, end := m.agentWindow(ws)
+		for idx := start; idx < end; idx++ {
 			if m.searchActive && strings.TrimSpace(m.searchQuery) != "" && !m.agentMatchesSearch(ws, idx) && !fuzzyMatch(m.searchQuery, workspaceSearchText(ws)) {
 				continue
 			}
-			items = append(items, visibleItem{Kind: kindAgent, Workspace: ws, AgentIndex: idx})
+			items = append(items, visibleItem{Kind: kindAgent, Workspace: ws, AgentIndex: idx, AgentStart: start, AgentEnd: end})
+
 		}
 	}
 	return items
@@ -1206,6 +1214,16 @@ func searchTokenSeparator(r rune) bool {
 	return !(unicode.IsLetter(r) || unicode.IsDigit(r))
 }
 
+func (m Model) agentWindow(ws workspace.Workspace) (int, int) {
+	count := len(ws.Agents)
+	if count <= maxVisibleAgents {
+		return 0, count
+	}
+	maxStart := count - maxVisibleAgents
+	start := min(max(0, m.agentOffsets[ws.Path]), maxStart)
+	return start, start + maxVisibleAgents
+}
+
 func (m Model) viewportInnerWidth() int {
 	return max(0, m.viewport.Width()-m.viewport.Style.GetHorizontalFrameSize())
 }
@@ -1379,6 +1397,11 @@ func (m *Model) moveSelection(delta int) {
 	if len(items) == 0 {
 		return
 	}
+	if m.scrollAgentWindow(delta, items) {
+		m.renderContent()
+		m.ensureSelectedVisible()
+		return
+	}
 	m.selected = min(max(0, m.selected+delta), len(items)-1)
 	m.renderContent()
 	m.ensureSelectedVisible()
@@ -1392,6 +1415,28 @@ func (m *Model) movePaletteSelection(delta int) {
 	m.selected = min(max(0, m.selected+delta), len(targets)-1)
 	m.renderContent()
 	m.ensureSelectedVisible()
+}
+
+func (m *Model) scrollAgentWindow(delta int, items []visibleItem) bool {
+	if delta == 0 || m.selected < 0 || m.selected >= len(items) {
+		return false
+	}
+	item := items[m.selected]
+	if item.Kind != kindAgent || len(item.Workspace.Agents) <= maxVisibleAgents {
+		return false
+	}
+
+	path := item.Workspace.Path
+	start, end := m.agentWindow(item.Workspace)
+	if delta > 0 && item.AgentIndex == end-1 && end < len(item.Workspace.Agents) {
+		m.agentOffsets[path] = start + 1
+		return true
+	}
+	if delta < 0 && item.AgentIndex == start && start > 0 {
+		m.agentOffsets[path] = start - 1
+		return true
+	}
+	return false
 }
 
 func (m *Model) moveWorkspaceSelection(delta int) {
