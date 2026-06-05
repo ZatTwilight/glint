@@ -114,6 +114,7 @@ Hook status is merged with tmux pane detection and wins over activity-based gues
 - Detects historical Pi, Codex, and Claude sessions from local JSONL transcript stores
 - Shows agent status with `●` running, `◌` idle, and `…` thinking based on pane activity or hook events
 - Expands/collapses workspace agent entries with `c`, `space`, or `tab`
+- Jumps between top-level projects with `[` and `]`
 - Refreshes every 2 seconds so closed/opened sessions update live
 - Provides a filterable terminal UI
 

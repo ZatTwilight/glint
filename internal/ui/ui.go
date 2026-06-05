@@ -216,6 +216,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "down", "j":
 			m.moveSelection(1)
 			return m, nil
+		case "[":
+			m.moveWorkspaceSelection(-1)
+			return m, nil
+		case "]":
+			m.moveWorkspaceSelection(1)
+			return m, nil
 		case "home":
 			m.selected = 0
 			m.renderContent()
@@ -1388,6 +1394,36 @@ func (m *Model) movePaletteSelection(delta int) {
 	m.ensureSelectedVisible()
 }
 
+func (m *Model) moveWorkspaceSelection(delta int) {
+	items := m.visibleItems()
+	if len(items) == 0 {
+		return
+	}
+
+	if delta > 0 {
+		for idx := min(m.selected+1, len(items)); idx < len(items); idx++ {
+			if items[idx].Kind == kindWorkspace {
+				m.selected = idx
+				m.renderContent()
+				m.ensureSelectedVisible()
+				return
+			}
+		}
+		return
+	}
+
+	if delta < 0 {
+		for idx := min(m.selected-1, len(items)-1); idx >= 0; idx-- {
+			if items[idx].Kind == kindWorkspace {
+				m.selected = idx
+				m.renderContent()
+				m.ensureSelectedVisible()
+				return
+			}
+		}
+	}
+}
+
 func (m *Model) toggleSelected() {
 	items := m.visibleItems()
 	if len(items) == 0 || m.selected < 0 || m.selected >= len(items) {
@@ -1463,9 +1499,10 @@ func (m Model) viewHeader() string {
 }
 
 func (m Model) viewFooter() string {
-	help := "↑/↓ move · / search · ctrl+p palette · ctrl+w worktree · ctrl+r cleanup · c/space collapse · Enter switch/create · n new chat · b shelve · ctrl+x delete · q quit"
+	help := "↑/↓ move · / search · ctrl+p palette · ctrl+w worktree · ctrl+r cleanup · [/] projects · c/space collapse · Enter switch/create · n new chat · b shelve · ctrl+x delete · q quit"
+
 	if m.state.SidebarMode {
-		help = "↑/↓ move · / search · ctrl+p palette · ctrl+w worktree · ctrl+r cleanup · Enter bring/switch · b shelve · ctrl+x delete · c collapse · q quit"
+		help = "↑/↓ move · / search · ctrl+p palette · ctrl+w worktree · ctrl+r cleanup · [/] projects · Enter bring/switch · b shelve · ctrl+x delete · c collapse · q quit"
 	}
 	if m.searchActive {
 		help = "type to filter · ↑/↓ move · Enter select · ctrl+u clear · Esc close search"
@@ -1478,6 +1515,7 @@ func (m Model) viewFooter() string {
 	}
 	if m.cleanupFlow.Active {
 		help = "type to filter · ↑/↓ move · Enter select · y confirm · n/Esc cancel"
+
 	}
 	content := fmt.Sprintf("status: %s\n%s", m.status, help)
 	return m.styles.Help.Render(content)
