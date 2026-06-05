@@ -29,9 +29,12 @@ type itemRendererStyles struct {
 	ActiveTitle   lipgloss.Style
 }
 
-func newItemRenderer(t theme.Theme) itemRenderer {
+func newItemRenderer(t theme.Theme, collapsed map[string]bool) itemRenderer {
+	if collapsed == nil {
+		collapsed = map[string]bool{}
+	}
 	return itemRenderer{
-		collapsed: map[string]bool{},
+		collapsed: collapsed,
 		styles: itemRendererStyles{
 			Title:       lipgloss.NewStyle().Foreground(t.Text).PaddingLeft(2),
 			Description: lipgloss.NewStyle().Foreground(t.Muted).PaddingLeft(2),
@@ -162,5 +165,5 @@ func quoteTask(task string) string {
 	if len(task) > maxLen {
 		task = task[:maxLen-1] + "…"
 	}
-	return "“" + task + "”"
+	return task
 }

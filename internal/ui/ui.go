@@ -75,7 +75,7 @@ func New(state State, refresh RefreshFunc) Model {
 		status:   status,
 		refresh:  refresh,
 		styles:   styles,
-		renderer: newItemRenderer(state.Theme),
+		renderer: newItemRenderer(state.Theme, loadCollapsedProjects()),
 	}
 	m.rebuildItems()
 	return m
@@ -270,12 +270,31 @@ func (m *Model) toggleSelected() {
 		m.status = "No agents in " + item.Workspace.Name
 		return
 	}
-	m.renderer.collapsed[item.Workspace.Path] = !m.renderer.collapsed[item.Workspace.Path]
-	if m.selected >= len(m.visibleItems()) {
-		m.selected = max(0, len(m.visibleItems())-1)
+	workspacePath := item.Workspace.Path
+	wasCollapsed := m.renderer.collapsed[workspacePath]
+	if wasCollapsed {
+		delete(m.renderer.collapsed, workspacePath)
+	} else {
+		m.renderer.collapsed[workspacePath] = true
+	}
+	m.selected = m.visibleWorkspaceIndex(workspacePath)
+	if m.selected < 0 {
+		m.selected = max(0, min(m.selected, len(m.visibleItems())-1))
+	}
+	if err := saveCollapsedProjects(m.renderer.collapsed); err != nil {
+		m.status = fmt.Sprintf("Could not save sidebar state: %v", err)
 	}
 	m.renderContent()
 	m.ensureSelectedVisible()
+}
+
+func (m Model) visibleWorkspaceIndex(path string) int {
+	for idx, item := range m.visibleItems() {
+		if item.Kind == kindWorkspace && item.Workspace.Path == path {
+			return idx
+		}
+	}
+	return -1
 }
 
 func (m *Model) ensureSelectedVisible() {
