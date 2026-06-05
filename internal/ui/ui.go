@@ -592,6 +592,21 @@ func (m *Model) moveCleanupSelection(delta int) {
 	m.ensureSelectedVisible()
 }
 
+func (m Model) mostRecentOtherSession(current string) (multiplexer.Session, bool) {
+	var best multiplexer.Session
+	ok := false
+	for _, session := range m.state.Multiplexer.Sessions {
+		if session.Name == current || session.Name == multiplexer.ShelfSessionName {
+			continue
+		}
+		if !ok || session.Activity.After(best.Activity) {
+			best = session
+			ok = true
+		}
+	}
+	return best, ok
+}
+
 func (m Model) filteredCleanupWorktrees() []vcs.Worktree {
 	query := strings.TrimSpace(m.cleanupFlow.Query)
 	worktrees := []vcs.Worktree{}
@@ -616,9 +631,20 @@ func (m Model) removeCleanupWorktree() (tea.Model, tea.Cmd) {
 	}
 	wt := m.cleanupFlow.Worktrees[0]
 	if session := m.sessionForPathOrName(wt.Path, filepath.Base(wt.Path)); session != nil {
-		if session.Name == m.state.CurrentSession || session.Name == multiplexer.ShelfSessionName {
+		if session.Name == multiplexer.ShelfSessionName {
 			m.status = fmt.Sprintf("Can't remove worktree with protected session %s", session.Name)
 			return m, nil
+		}
+		if session.Name == m.state.CurrentSession {
+			replacement, ok := m.mostRecentOtherSession(session.Name)
+			if !ok {
+				m.status = fmt.Sprintf("Can't remove current session %s; no other session to switch to", session.Name)
+				return m, nil
+			}
+			if err := multiplexer.SwitchSession(m.state.Multiplexer.Kind, replacement.Name); err != nil {
+				m.status = fmt.Sprintf("Switch before remove failed: %v", err)
+				return m, nil
+			}
 		}
 		if err := multiplexer.KillSession(m.state.Multiplexer.Kind, session.Name); err != nil {
 			m.status = fmt.Sprintf("Kill session failed: %v", err)
