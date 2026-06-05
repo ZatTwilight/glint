@@ -14,6 +14,25 @@ const (
 	Git Kind = "git"
 )
 
+type Backend interface {
+	Kind() Kind
+	RepoRoot(path string) (string, error)
+	Branches(repoPath string) ([]Branch, error)
+	Worktrees(repoPath string) ([]Worktree, error)
+	CreateWorktree(req CreateWorktreeRequest) error
+	RemoveWorktree(repoPath, worktreePath string, force bool) error
+	SuggestedWorktreeParent(repoPath string) string
+	SuggestedWorktreePath(repoPath, name string) string
+}
+
+type GitBackend struct{}
+
+func (GitBackend) Kind() Kind { return Git }
+
+func ForPath(path string) Backend {
+	return GitBackend{}
+}
+
 type Branch struct {
 	Name   string
 	Ref    string
@@ -33,7 +52,7 @@ type CreateWorktreeRequest struct {
 	NewBranchName string
 }
 
-func GitRepoRoot(path string) (string, error) {
+func (GitBackend) RepoRoot(path string) (string, error) {
 	cmd := exec.Command("git", "-C", path, "rev-parse", "--show-toplevel")
 	var out bytes.Buffer
 	cmd.Stdout = &out
@@ -44,7 +63,7 @@ func GitRepoRoot(path string) (string, error) {
 	return strings.TrimSpace(out.String()), nil
 }
 
-func GitBranches(repoPath string) ([]Branch, error) {
+func (GitBackend) Branches(repoPath string) ([]Branch, error) {
 	cmd := exec.Command("git", "-C", repoPath, "branch", "-a", "--format=%(refname):%(refname:short)")
 	var out bytes.Buffer
 	cmd.Stdout = &out
@@ -74,7 +93,7 @@ func GitBranches(repoPath string) ([]Branch, error) {
 	return branches, nil
 }
 
-func GitWorktrees(repoPath string) ([]Worktree, error) {
+func (GitBackend) Worktrees(repoPath string) ([]Worktree, error) {
 	cmd := exec.Command("git", "-C", repoPath, "worktree", "list", "--porcelain")
 	var out bytes.Buffer
 	cmd.Stdout = &out
@@ -118,7 +137,7 @@ func GitWorktrees(repoPath string) ([]Worktree, error) {
 	return worktrees, nil
 }
 
-func GitCreateWorktree(req CreateWorktreeRequest) error {
+func (GitBackend) CreateWorktree(req CreateWorktreeRequest) error {
 	args := []string{"-C", req.RepoPath, "worktree", "add"}
 	if strings.TrimSpace(req.NewBranchName) != "" {
 		args = append(args, "-b", strings.TrimSpace(req.NewBranchName))
@@ -134,7 +153,7 @@ func GitCreateWorktree(req CreateWorktreeRequest) error {
 	return nil
 }
 
-func GitRemoveWorktree(repoPath, worktreePath string, force bool) error {
+func (GitBackend) RemoveWorktree(repoPath, worktreePath string, force bool) error {
 	args := []string{"-C", repoPath, "worktree", "remove", worktreePath}
 	if force {
 		args = append(args, "--force")
@@ -162,17 +181,31 @@ func SuggestedWorktreeName(branch string) string {
 	return branch
 }
 
-func SuggestedWorktreeParent(repoPath string) string {
-	root, err := GitRepoRoot(repoPath)
+func (GitBackend) SuggestedWorktreeParent(repoPath string) string {
+	root, err := GitBackend{}.RepoRoot(repoPath)
 	if err != nil || root == "" {
 		root = repoPath
 	}
 	return filepath.Dir(root)
 }
 
-func SuggestedWorktreePath(repoPath, name string) string {
+func (backend GitBackend) SuggestedWorktreePath(repoPath, name string) string {
 	if filepath.IsAbs(name) {
 		return name
 	}
-	return filepath.Join(SuggestedWorktreeParent(repoPath), name)
+	return filepath.Join(backend.SuggestedWorktreeParent(repoPath), name)
+}
+
+func GitRepoRoot(path string) (string, error)           { return GitBackend{}.RepoRoot(path) }
+func GitBranches(repoPath string) ([]Branch, error)     { return GitBackend{}.Branches(repoPath) }
+func GitWorktrees(repoPath string) ([]Worktree, error)  { return GitBackend{}.Worktrees(repoPath) }
+func GitCreateWorktree(req CreateWorktreeRequest) error { return GitBackend{}.CreateWorktree(req) }
+func GitRemoveWorktree(repoPath, worktreePath string, force bool) error {
+	return GitBackend{}.RemoveWorktree(repoPath, worktreePath, force)
+}
+func SuggestedWorktreeParent(repoPath string) string {
+	return GitBackend{}.SuggestedWorktreeParent(repoPath)
+}
+func SuggestedWorktreePath(repoPath, name string) string {
+	return GitBackend{}.SuggestedWorktreePath(repoPath, name)
 }

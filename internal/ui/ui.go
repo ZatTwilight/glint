@@ -106,6 +106,7 @@ const (
 type worktreeFlow struct {
 	Active       bool
 	Step         worktreeFlowStep
+	Backend      vcs.Backend
 	Workspace    workspace.Workspace
 	Branches     []vcs.Branch
 	CheckedOut   map[string]bool
@@ -120,6 +121,7 @@ type worktreeFlow struct {
 
 type cleanupFlow struct {
 	Active    bool
+	Backend   vcs.Backend
 	Workspace workspace.Workspace
 	Worktrees []vcs.Worktree
 	Query     string
@@ -442,7 +444,8 @@ func (m Model) startCleanupFlowForSelected() (tea.Model, tea.Cmd) {
 }
 
 func (m Model) startCleanupFlow(ws workspace.Workspace) (tea.Model, tea.Cmd) {
-	worktrees, err := vcs.GitWorktrees(ws.Path)
+	backend := vcs.ForPath(ws.Path)
+	worktrees, err := backend.Worktrees(ws.Path)
 	if err != nil {
 		m.status = fmt.Sprintf("Worktrees failed: %v", err)
 		return m, nil
@@ -460,7 +463,7 @@ func (m Model) startCleanupFlow(ws workspace.Workspace) (tea.Model, tea.Cmd) {
 	}
 	m.searchActive = false
 	m.paletteActive = false
-	m.cleanupFlow = cleanupFlow{Active: true, Workspace: ws, Worktrees: removable}
+	m.cleanupFlow = cleanupFlow{Active: true, Backend: backend, Workspace: ws, Worktrees: removable}
 	m.status = "Clean up worktrees: pick one to remove"
 	m.renderContent()
 	m.ensureSelectedVisible()
@@ -468,7 +471,8 @@ func (m Model) startCleanupFlow(ws workspace.Workspace) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) startWorktreeFlow(ws workspace.Workspace) (tea.Model, tea.Cmd) {
-	branches, err := vcs.GitBranches(ws.Path)
+	backend := vcs.ForPath(ws.Path)
+	branches, err := backend.Branches(ws.Path)
 	if err != nil {
 		m.status = fmt.Sprintf("Branches failed: %v", err)
 		return m, nil
@@ -477,7 +481,7 @@ func (m Model) startWorktreeFlow(ws workspace.Workspace) (tea.Model, tea.Cmd) {
 		m.status = "No branches found"
 		return m, nil
 	}
-	worktrees, err := vcs.GitWorktrees(ws.Path)
+	worktrees, err := backend.Worktrees(ws.Path)
 	if err != nil {
 		m.status = fmt.Sprintf("Worktrees failed: %v", err)
 		return m, nil
@@ -488,7 +492,7 @@ func (m Model) startWorktreeFlow(ws workspace.Workspace) (tea.Model, tea.Cmd) {
 	}
 	m.searchActive = false
 	m.paletteActive = false
-	m.worktreeFlow = worktreeFlow{Active: true, Step: worktreeStepBranch, Workspace: ws, Branches: branches, CheckedOut: checkedOut}
+	m.worktreeFlow = worktreeFlow{Active: true, Step: worktreeStepBranch, Backend: backend, Workspace: ws, Branches: branches, CheckedOut: checkedOut}
 	m.status = "Create worktree: pick base branch"
 	m.renderContent()
 	m.ensureSelectedVisible()
@@ -621,7 +625,7 @@ func (m Model) removeCleanupWorktree() (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	}
-	if err := vcs.GitRemoveWorktree(m.cleanupFlow.Workspace.Path, wt.Path, false); err != nil {
+	if err := m.cleanupFlow.Backend.RemoveWorktree(m.cleanupFlow.Workspace.Path, wt.Path, false); err != nil {
 		m.status = fmt.Sprintf("Remove failed: %v", err)
 		return m, nil
 	}
@@ -712,7 +716,7 @@ func (m Model) updateWorktreeFlow(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.worktreeFlow.Step = worktreeStepPath
 			m.worktreeFlow.Query = name
 			m.worktreeFlow.Pristine = true
-			m.status = fmt.Sprintf("Worktree path relative to %s", vcs.SuggestedWorktreeParent(m.worktreeFlow.Workspace.Path))
+			m.status = fmt.Sprintf("Worktree path relative to %s", m.worktreeFlow.Backend.SuggestedWorktreeParent(m.worktreeFlow.Workspace.Path))
 			m.renderContent()
 			return m, nil
 		case worktreeStepPath:
@@ -721,7 +725,7 @@ func (m Model) updateWorktreeFlow(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.status = "Enter a worktree path"
 				return m, nil
 			}
-			m.worktreeFlow.WorktreePath = vcs.SuggestedWorktreePath(m.worktreeFlow.Workspace.Path, relPath)
+			m.worktreeFlow.WorktreePath = m.worktreeFlow.Backend.SuggestedWorktreePath(m.worktreeFlow.Workspace.Path, relPath)
 			m.worktreeFlow.Query = ""
 			m.worktreeFlow.Pristine = false
 			if m.branchAlreadyCheckedOut(m.worktreeFlow.Branch) {
@@ -813,13 +817,57 @@ func (m Model) createWorktreeFromFlow() (tea.Model, tea.Cmd) {
 	if flow.NewBranch {
 		newBranch = strings.TrimSpace(flow.Query)
 	}
-	if err := vcs.GitCreateWorktree(vcs.CreateWorktreeRequest{RepoPath: flow.Workspace.Path, WorktreePath: flow.WorktreePath, BaseRef: flow.Branch.Name, NewBranchName: newBranch}); err != nil {
+	if err := flow.Backend.CreateWorktree(vcs.CreateWorktreeRequest{RepoPath: flow.Workspace.Path, WorktreePath: flow.WorktreePath, BaseRef: flow.Branch.Name, NewBranchName: newBranch}); err != nil {
 		m.status = fmt.Sprintf("Create worktree failed: %v", err)
 		return m, nil
 	}
 	m.worktreeFlow = worktreeFlow{}
-	m.status = fmt.Sprintf("Created worktree %s", flow.WorktreePath)
+	return m.openCreatedWorktree(flow)
+}
+
+func (m Model) openCreatedWorktree(flow worktreeFlow) (tea.Model, tea.Cmd) {
+	sessionName := m.sessionNameForNewPath(flow.WorktreePath, flow.WorktreeName)
+	if m.state.Multiplexer.Kind == multiplexer.None {
+		m.status = fmt.Sprintf("Created worktree %s", flow.WorktreePath)
+		return m, m.doRefresh()
+	}
+	if !m.state.Multiplexer.SessionNames()[sessionName] {
+		if err := multiplexer.NewSession(m.state.Multiplexer.Kind, sessionName, flow.WorktreePath); err != nil {
+			m.status = fmt.Sprintf("Created worktree, session failed: %v", err)
+			return m, m.doRefresh()
+		}
+	}
+	switchSession := multiplexer.SwitchSession
+	if m.state.SidebarMode {
+		switchSession = multiplexer.SwitchSessionWithSidebar
+	}
+	if err := switchSession(m.state.Multiplexer.Kind, sessionName); err != nil {
+		m.status = fmt.Sprintf("Created worktree, switch failed: %v", err)
+		return m, m.doRefresh()
+	}
+	m.status = fmt.Sprintf("Created worktree and switched to %s", sessionName)
 	return m, m.doRefresh()
+}
+
+func (m Model) sessionNameForNewPath(path, fallback string) string {
+	base := filepath.Base(path)
+	if strings.TrimSpace(base) == "" || base == "." || base == string(filepath.Separator) {
+		base = fallback
+	}
+	base = strings.TrimSpace(base)
+	if base == "" {
+		base = "worktree"
+	}
+	sessions := m.state.Multiplexer.SessionByName()
+	if session, ok := sessions[base]; !ok || filepath.Clean(session.Path) == filepath.Clean(path) {
+		return base
+	}
+	for i := 2; ; i++ {
+		candidate := fmt.Sprintf("%s-%d", base, i)
+		if session, ok := sessions[candidate]; !ok || filepath.Clean(session.Path) == filepath.Clean(path) {
+			return candidate
+		}
+	}
 }
 
 func initialRefreshTick() tea.Cmd {
@@ -1250,7 +1298,7 @@ func (m *Model) renderWorktreeFlowContent() {
 		lines = append(lines, m.renderer.styles.Description.Render("Enter accepts default · typing replaces it"))
 	case worktreeStepPath:
 		lines = append(lines, m.renderer.styles.Title.Render("Worktree path"))
-		lines = append(lines, m.renderer.styles.Description.Render("Relative to: "+vcs.SuggestedWorktreeParent(flow.Workspace.Path)))
+		lines = append(lines, m.renderer.styles.Description.Render("Relative to: "+flow.Backend.SuggestedWorktreeParent(flow.Workspace.Path)))
 		lines = append(lines, m.renderer.styles.SelectedDesc.Render(flow.Query))
 		lines = append(lines, m.renderer.styles.Description.Render("Enter accepts default · typing replaces it"))
 	case worktreeStepConfirmBranch:
