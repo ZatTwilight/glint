@@ -46,6 +46,7 @@ type Model struct {
 	paletteActive bool
 	paletteQuery  string
 	worktreeFlow  worktreeFlow
+	cleanupFlow   cleanupFlow
 }
 
 type itemKind int
@@ -83,6 +84,7 @@ const (
 	paletteActionNewAgent
 	paletteActionShelveMain
 	paletteActionCreateWorktree
+	paletteActionCleanupWorktrees
 )
 
 type paletteAction struct {
@@ -114,6 +116,15 @@ type worktreeFlow struct {
 	WorktreeName string
 	WorktreePath string
 	NewBranch    bool
+}
+
+type cleanupFlow struct {
+	Active    bool
+	Workspace workspace.Workspace
+	Worktrees []vcs.Worktree
+	Query     string
+	Selected  int
+	Confirm   bool
 }
 
 func New(state State, refresh RefreshFunc) Model {
@@ -153,6 +164,9 @@ type animationTickMsg time.Time
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		if m.cleanupFlow.Active {
+			return m.updateCleanupFlow(msg)
+		}
 		if m.worktreeFlow.Active {
 			return m.updateWorktreeFlow(msg)
 		}
@@ -185,6 +199,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "ctrl+w":
 			return m.startWorktreeFlowForSelected()
+		case "ctrl+r":
+			return m.startCleanupFlowForSelected()
 		case " ", "space", "tab", "c":
 			m.toggleSelected()
 			return m, nil
@@ -416,6 +432,41 @@ func (m Model) startWorktreeFlowForSelected() (tea.Model, tea.Cmd) {
 	return m.startWorktreeFlow(ws)
 }
 
+func (m Model) startCleanupFlowForSelected() (tea.Model, tea.Cmd) {
+	ws, ok := m.selectedWorkspace()
+	if !ok {
+		m.status = "Pick a repo/workspace"
+		return m, nil
+	}
+	return m.startCleanupFlow(ws)
+}
+
+func (m Model) startCleanupFlow(ws workspace.Workspace) (tea.Model, tea.Cmd) {
+	worktrees, err := vcs.GitWorktrees(ws.Path)
+	if err != nil {
+		m.status = fmt.Sprintf("Worktrees failed: %v", err)
+		return m, nil
+	}
+	removable := []vcs.Worktree{}
+	for _, wt := range worktrees {
+		if isBareWorktree(wt) {
+			continue
+		}
+		removable = append(removable, wt)
+	}
+	if len(removable) == 0 {
+		m.status = "No removable worktrees"
+		return m, nil
+	}
+	m.searchActive = false
+	m.paletteActive = false
+	m.cleanupFlow = cleanupFlow{Active: true, Workspace: ws, Worktrees: removable}
+	m.status = "Clean up worktrees: pick one to remove"
+	m.renderContent()
+	m.ensureSelectedVisible()
+	return m, nil
+}
+
 func (m Model) startWorktreeFlow(ws workspace.Workspace) (tea.Model, tea.Cmd) {
 	branches, err := vcs.GitBranches(ws.Path)
 	if err != nil {
@@ -442,6 +493,141 @@ func (m Model) startWorktreeFlow(ws workspace.Workspace) (tea.Model, tea.Cmd) {
 	m.renderContent()
 	m.ensureSelectedVisible()
 	return m, nil
+}
+
+func isBareWorktree(wt vcs.Worktree) bool {
+	path := filepath.Clean(wt.Path)
+	base := filepath.Base(path)
+	return wt.Bare || base == ".bare" || strings.HasSuffix(path, string(filepath.Separator)+".bare")
+}
+
+func (m Model) updateCleanupFlow(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
+	case "esc":
+		m.cleanupFlow = cleanupFlow{}
+		m.status = "Enter switches or creates sessions"
+		m.renderContent()
+		return m, nil
+	case "up":
+		m.moveCleanupSelection(-1)
+		return m, nil
+	case "down":
+		m.moveCleanupSelection(1)
+		return m, nil
+	case "backspace", "ctrl+h":
+		m.cleanupFlow.Query = dropLastRune(m.cleanupFlow.Query)
+		m.cleanupFlow.Selected = 0
+		m.renderContent()
+		return m, nil
+	case "ctrl+u":
+		m.cleanupFlow.Query = ""
+		m.cleanupFlow.Selected = 0
+		m.renderContent()
+		return m, nil
+	case " ", "space":
+		m.cleanupFlow.Query += " "
+		m.cleanupFlow.Selected = 0
+		m.renderContent()
+		return m, nil
+	case "y":
+		if m.cleanupFlow.Confirm {
+			return m.removeCleanupWorktree()
+		}
+		m.cleanupFlow.Query += "y"
+		m.cleanupFlow.Selected = 0
+		m.renderContent()
+		return m, nil
+	case "n":
+		if m.cleanupFlow.Confirm {
+			m.cleanupFlow.Confirm = false
+			m.status = "Clean up cancelled"
+			m.renderContent()
+			return m, nil
+		}
+		m.cleanupFlow.Query += "n"
+		m.cleanupFlow.Selected = 0
+		m.renderContent()
+		return m, nil
+	case "enter":
+		if m.cleanupFlow.Confirm {
+			m.status = "Press y to remove or n to cancel"
+			return m, nil
+		}
+		worktrees := m.filteredCleanupWorktrees()
+		if len(worktrees) == 0 || m.cleanupFlow.Selected >= len(worktrees) {
+			m.status = "Pick a worktree"
+			return m, nil
+		}
+		m.cleanupFlow.Worktrees = []vcs.Worktree{worktrees[m.cleanupFlow.Selected]}
+		m.cleanupFlow.Selected = 0
+		m.cleanupFlow.Confirm = true
+		m.status = "Confirm remove worktree? y/n"
+		m.renderContent()
+		return m, nil
+	}
+	if printableKey(msg.String()) {
+		m.cleanupFlow.Query += msg.String()
+		m.cleanupFlow.Selected = 0
+		m.renderContent()
+	}
+	return m, nil
+}
+
+func (m *Model) moveCleanupSelection(delta int) {
+	if m.cleanupFlow.Confirm {
+		return
+	}
+	worktrees := m.filteredCleanupWorktrees()
+	if len(worktrees) == 0 {
+		return
+	}
+	m.cleanupFlow.Selected = min(max(0, m.cleanupFlow.Selected+delta), len(worktrees)-1)
+	m.renderContent()
+	m.ensureSelectedVisible()
+}
+
+func (m Model) filteredCleanupWorktrees() []vcs.Worktree {
+	query := strings.TrimSpace(m.cleanupFlow.Query)
+	worktrees := []vcs.Worktree{}
+	for _, wt := range m.cleanupFlow.Worktrees {
+		text := strings.Join([]string{wt.Path, wt.Branch, filepath.Base(wt.Path)}, " ")
+		if query == "" || fuzzyMatch(query, text) {
+			worktrees = append(worktrees, wt)
+		}
+	}
+	if query != "" {
+		sort.SliceStable(worktrees, func(i, j int) bool {
+			return weightedMatchScore(query, filepath.Base(worktrees[i].Path), 100) > weightedMatchScore(query, filepath.Base(worktrees[j].Path), 100)
+		})
+	}
+	return worktrees
+}
+
+func (m Model) removeCleanupWorktree() (tea.Model, tea.Cmd) {
+	if len(m.cleanupFlow.Worktrees) == 0 {
+		m.status = "Pick a worktree"
+		return m, nil
+	}
+	wt := m.cleanupFlow.Worktrees[0]
+	if session := m.sessionForPathOrName(wt.Path, filepath.Base(wt.Path)); session != nil {
+		if session.Name == m.state.CurrentSession || session.Name == multiplexer.ShelfSessionName {
+			m.status = fmt.Sprintf("Can't remove worktree with protected session %s", session.Name)
+			return m, nil
+		}
+		if err := multiplexer.KillSession(m.state.Multiplexer.Kind, session.Name); err != nil {
+			m.status = fmt.Sprintf("Kill session failed: %v", err)
+			return m, nil
+		}
+	}
+	if err := vcs.GitRemoveWorktree(m.cleanupFlow.Workspace.Path, wt.Path, false); err != nil {
+		m.status = fmt.Sprintf("Remove failed: %v", err)
+		return m, nil
+	}
+	m.cleanupFlow = cleanupFlow{}
+	m.status = fmt.Sprintf("Removed worktree %s", filepath.Base(wt.Path))
+	return m, m.doRefresh()
 }
 
 func (m Model) updateWorktreeFlow(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -741,6 +927,17 @@ func (m Model) paletteTargets() []paletteTarget {
 				createWorktreeTarget.Score = score + 15
 				targets = append(targets, createWorktreeTarget)
 			}
+			cleanupTarget := paletteTarget{
+				Action:   paletteAction{Kind: paletteActionCleanupWorktrees, Workspace: ws},
+				Label:    "action",
+				Title:    "Clean up worktrees in " + ws.Name,
+				Subtitle: "Remove a selected git worktree",
+				Search:   strings.Join([]string{"action cleanup clean remove delete prune worktree", ws.Name, ws.Path, ws.ParentName, ws.Branch}, " "),
+			}
+			if score, ok := paletteTargetScore(query, cleanupTarget); ok {
+				cleanupTarget.Score = score + 15
+				targets = append(targets, cleanupTarget)
+			}
 		}
 		if m.state.SidebarMode {
 			actionTarget := paletteTarget{
@@ -938,6 +1135,10 @@ func (m Model) viewportInnerHeight() int {
 }
 
 func (m *Model) renderContent() {
+	if m.cleanupFlow.Active {
+		m.renderCleanupFlowContent()
+		return
+	}
 	if m.worktreeFlow.Active {
 		m.renderWorktreeFlowContent()
 		return
@@ -971,6 +1172,46 @@ func (m *Model) renderContent() {
 	}
 	lines = append(lines, "", "", "")
 
+	m.viewport.SetContent(strings.Join(lines, "\n"))
+}
+
+func (m *Model) renderCleanupFlowContent() {
+	lines := []string{}
+	m.spans = nil
+	flow := m.cleanupFlow
+	lines = append(lines, m.renderer.styles.Title.Render("Clean up worktrees in "+flow.Workspace.Name))
+	lines = append(lines, m.renderer.styles.Description.Render(flow.Workspace.Path), "")
+	if flow.Confirm && len(flow.Worktrees) > 0 {
+		wt := flow.Worktrees[0]
+		lines = append(lines, m.renderer.styles.SelectedTitle.Render("Remove "+filepath.Base(wt.Path)+"?"))
+		lines = append(lines, m.renderer.styles.Description.Render(wt.Path))
+		lines = append(lines, m.renderer.styles.Description.Render("Branch: "+wt.Branch))
+		lines = append(lines, "", m.renderer.styles.Description.Render("This will also kill a matching tmux session if one exists."))
+		lines = append(lines, m.renderer.styles.Description.Render("Press y to remove · n/Esc to cancel"))
+		m.viewport.SetContent(strings.Join(lines, "\n"))
+		return
+	}
+	lines = append(lines, m.renderer.styles.Description.Render("Filter: "+flow.Query), "")
+	worktrees := m.filteredCleanupWorktrees()
+	for idx, wt := range worktrees {
+		start := len(lines)
+		title := m.styles.Badge.Render("worktree") + " " + filepath.Base(wt.Path)
+		subtitle := wt.Path
+		if wt.Branch != "" {
+			subtitle += " · " + wt.Branch
+		}
+		if session := m.sessionForPathOrName(wt.Path, filepath.Base(wt.Path)); session != nil {
+			subtitle += " · tmux " + session.Name
+		}
+		if idx == flow.Selected {
+			lines = append(lines, m.renderer.styles.SelectedTitle.Render(title), m.renderer.styles.SelectedDesc.Render(subtitle))
+		} else {
+			lines = append(lines, m.renderer.styles.Title.Render(title), m.renderer.styles.Description.Render(subtitle))
+		}
+		lines = append(lines, "")
+		m.spans = append(m.spans, itemSpan{start: start, end: len(lines)})
+	}
+	lines = append(lines, "", "", "")
 	m.viewport.SetContent(strings.Join(lines, "\n"))
 }
 
@@ -1130,7 +1371,7 @@ func (m *Model) ensureSelectedVisible() {
 }
 
 func (m Model) viewHeader() string {
-	badge := m.styles.Badge.Render(strings.ToUpper(string(m.state.Multiplexer.Kind)))
+	badge := m.styles.Badge.Render("Glint")
 	header := fmt.Sprintf("%s  %d projects", badge, len(m.state.Workspaces))
 	if m.searchActive {
 		header = fmt.Sprintf("%s  /%s", header, m.searchQuery)
@@ -1141,13 +1382,16 @@ func (m Model) viewHeader() string {
 	if m.worktreeFlow.Active {
 		header = fmt.Sprintf("%s  worktree", header)
 	}
+	if m.cleanupFlow.Active {
+		header = fmt.Sprintf("%s  cleanup", header)
+	}
 	return m.styles.Header.Render(header)
 }
 
 func (m Model) viewFooter() string {
-	help := "↑/↓ move · / search · ctrl+p palette · c/space collapse · Enter switch/create · n new chat · b shelve · ctrl+x delete · q quit"
+	help := "↑/↓ move · / search · ctrl+p palette · ctrl+w worktree · ctrl+r cleanup · c/space collapse · Enter switch/create · n new chat · b shelve · ctrl+x delete · q quit"
 	if m.state.SidebarMode {
-		help = "↑/↓ move · / search · ctrl+p palette · Enter bring/switch · b shelve · ctrl+x delete · c collapse · q quit"
+		help = "↑/↓ move · / search · ctrl+p palette · ctrl+w worktree · ctrl+r cleanup · Enter bring/switch · b shelve · ctrl+x delete · c collapse · q quit"
 	}
 	if m.searchActive {
 		help = "type to filter · ↑/↓ move · Enter select · ctrl+u clear · Esc close search"
@@ -1157,6 +1401,9 @@ func (m Model) viewFooter() string {
 	}
 	if m.worktreeFlow.Active {
 		help = "type to filter/edit · ↑/↓ move branches · Enter next/create · y/n choose · Esc cancel"
+	}
+	if m.cleanupFlow.Active {
+		help = "type to filter · ↑/↓ move · Enter select · y confirm · n/Esc cancel"
 	}
 	content := fmt.Sprintf("status: %s\n%s", m.status, help)
 	return m.styles.Help.Render(content)
@@ -1200,6 +1447,8 @@ func (m Model) activatePaletteAction(action paletteAction) (tea.Model, tea.Cmd) 
 		return m.shelveMainPane()
 	case paletteActionCreateWorktree:
 		return m.startWorktreeFlow(action.Workspace)
+	case paletteActionCleanupWorktrees:
+		return m.startCleanupFlow(action.Workspace)
 	default:
 		m.status = "Unknown palette action"
 		return m, nil
@@ -1408,18 +1657,21 @@ func (m Model) activateWorkspace(selected workspace.Workspace) (tea.Model, tea.C
 }
 
 func (m Model) sessionFromWorkspace(ws workspace.Workspace) *multiplexer.Session {
+	return m.sessionForPathOrName(ws.Path, ws.Name)
+}
+
+func (m Model) sessionForPathOrName(path, name string) *multiplexer.Session {
 	sessionNames := m.state.Multiplexer.SessionByName()
 	sessionPaths := m.state.Multiplexer.SessionByPath()
 
-	session, active := sessionNames[ws.Name]
+	session, active := sessionNames[name]
 	if !active {
-		session, active = sessionPaths[filepath.Clean(ws.Path)]
+		session, active = sessionPaths[filepath.Clean(path)]
 	}
 	if !active {
 		return nil
-	} else {
-		return &session
 	}
+	return &session
 }
 
 func sessionNameForWorkspace(ws workspace.Workspace, session multiplexer.Session, active bool) string {

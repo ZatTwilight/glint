@@ -23,6 +23,7 @@ type Branch struct {
 type Worktree struct {
 	Path   string
 	Branch string
+	Bare   bool
 }
 
 type CreateWorktreeRequest struct {
@@ -100,6 +101,9 @@ func GitWorktrees(repoPath string) ([]Worktree, error) {
 		if after, ok := strings.CutPrefix(line, "branch "); ok {
 			cur.Branch = after
 		}
+		if line == "bare" {
+			cur.Bare = true
+		}
 		if line == "" {
 			if cur.Path != "" {
 				worktrees = append(worktrees, cur)
@@ -126,6 +130,21 @@ func GitCreateWorktree(req CreateWorktreeRequest) error {
 	cmd.Stderr = &out
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("create worktree: %s", strings.TrimSpace(out.String()))
+	}
+	return nil
+}
+
+func GitRemoveWorktree(repoPath, worktreePath string, force bool) error {
+	args := []string{"-C", repoPath, "worktree", "remove", worktreePath}
+	if force {
+		args = append(args, "--force")
+	}
+	cmd := exec.Command("git", args...)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("remove worktree: %s", strings.TrimSpace(out.String()))
 	}
 	return nil
 }
