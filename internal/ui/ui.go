@@ -66,11 +66,25 @@ type itemSpan struct {
 
 type paletteTarget struct {
 	Item     visibleItem
+	Action   paletteAction
 	Label    string
 	Title    string
 	Subtitle string
 	Search   string
 	Score    int
+}
+
+type paletteActionKind int
+
+const (
+	paletteActionNone paletteActionKind = iota
+	paletteActionNewAgent
+	paletteActionShelveMain
+)
+
+type paletteAction struct {
+	Kind      paletteActionKind
+	Workspace workspace.Workspace
 }
 
 func New(state State, refresh RefreshFunc) Model {
@@ -137,7 +151,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.renderContent()
 			m.ensureSelectedVisible()
 			return m, nil
-		case " ", "tab", "c":
+		case " ", "space", "tab", "c":
 			m.toggleSelected()
 			return m, nil
 		case "b":
@@ -246,6 +260,13 @@ func (m Model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.renderContent()
 		m.ensureSelectedVisible()
 		return m, nil
+	case "space":
+		m.searchQuery += " "
+		m.selected = 0
+		m.updateSearchStatus()
+		m.renderContent()
+		m.ensureSelectedVisible()
+		return m, nil
 	}
 
 	if printableKey(msg.String()) {
@@ -306,6 +327,13 @@ func (m Model) updatePalette(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "ctrl+u":
 		m.paletteQuery = ""
+		m.selected = 0
+		m.updatePaletteStatus()
+		m.renderContent()
+		m.ensureSelectedVisible()
+		return m, nil
+	case "space":
+		m.paletteQuery += " "
 		m.selected = 0
 		m.updatePaletteStatus()
 		m.renderContent()
@@ -408,6 +436,19 @@ func (m Model) visibleItems() []visibleItem {
 func (m Model) paletteTargets() []paletteTarget {
 	query := strings.TrimSpace(m.paletteQuery)
 	targets := []paletteTarget{}
+	if m.state.SidebarMode {
+		target := paletteTarget{
+			Action:   paletteAction{Kind: paletteActionShelveMain},
+			Label:    "action",
+			Title:    "Shelve main pane",
+			Subtitle: "Move current main pane to the Glint shelf",
+			Search:   "action shelve shelf main pane",
+		}
+		if score, ok := paletteTargetScore(query, target); ok {
+			target.Score = score + 10
+			targets = append(targets, target)
+		}
+	}
 	for _, ws := range m.state.Workspaces {
 		if ws.GitType == 1 {
 			continue
@@ -423,6 +464,19 @@ func (m Model) paletteTargets() []paletteTarget {
 		if score, ok := paletteTargetScore(query, target); ok {
 			target.Score = score + 25
 			targets = append(targets, target)
+		}
+		if m.state.SidebarMode {
+			actionTarget := paletteTarget{
+				Action:   paletteAction{Kind: paletteActionNewAgent, Workspace: ws},
+				Label:    "action",
+				Title:    "New agent in " + ws.Name,
+				Subtitle: ws.Path,
+				Search:   strings.Join([]string{"action new agent chat pi", ws.Name, ws.Path, ws.ParentName, ws.Branch}, " "),
+			}
+			if score, ok := paletteTargetScore(query, actionTarget); ok {
+				actionTarget.Score = score + 15
+				targets = append(targets, actionTarget)
+			}
 		}
 		for idx, ag := range ws.Agents {
 			title := quoteTask(ag.Task)
@@ -445,13 +499,23 @@ func (m Model) paletteTargets() []paletteTarget {
 			if targets[i].Score != targets[j].Score {
 				return targets[i].Score > targets[j].Score
 			}
-			if targets[i].Item.Kind != targets[j].Item.Kind {
-				return targets[i].Item.Kind == kindWorkspace
+			if targetKindRank(targets[i]) != targetKindRank(targets[j]) {
+				return targetKindRank(targets[i]) < targetKindRank(targets[j])
 			}
 			return targets[i].Title < targets[j].Title
 		})
 	}
 	return targets
+}
+
+func targetKindRank(target paletteTarget) int {
+	if target.Action.Kind != paletteActionNone {
+		return 1
+	}
+	if target.Item.Kind == kindWorkspace {
+		return 0
+	}
+	return 2
 }
 
 func paletteTargetScore(query string, target paletteTarget) (int, bool) {
@@ -773,7 +837,23 @@ func (m Model) activatePaletteSelected() (tea.Model, tea.Cmd) {
 		m.status = "Pick a command"
 		return m, nil
 	}
-	return m.activateItem(targets[m.selected].Item)
+	target := targets[m.selected]
+	if target.Action.Kind != paletteActionNone {
+		return m.activatePaletteAction(target.Action)
+	}
+	return m.activateItem(target.Item)
+}
+
+func (m Model) activatePaletteAction(action paletteAction) (tea.Model, tea.Cmd) {
+	switch action.Kind {
+	case paletteActionNewAgent:
+		return m.newAgentForWorkspace(action.Workspace)
+	case paletteActionShelveMain:
+		return m.shelveMainPane()
+	default:
+		m.status = "Unknown palette action"
+		return m, nil
+	}
 }
 
 func (m Model) activateItem(item visibleItem) (tea.Model, tea.Cmd) {
@@ -916,6 +996,10 @@ func (m Model) newAgentForSelected() (tea.Model, tea.Cmd) {
 		m.status = "Pick a project"
 		return m, nil
 	}
+	return m.newAgentForWorkspace(selected)
+}
+
+func (m Model) newAgentForWorkspace(selected workspace.Workspace) (tea.Model, tea.Cmd) {
 	if !m.state.SidebarMode {
 		m.status = "New chat is only available in sidebar mode"
 		return m, nil
