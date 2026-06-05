@@ -99,6 +99,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "enter":
 			return m.activateSelected()
+		case "ctrl+x":
+			return m.removeSession()
 		case " ", "tab", "c":
 			m.toggleSelected()
 			return m, nil
@@ -299,9 +301,9 @@ func (m Model) viewHeader() string {
 }
 
 func (m Model) viewFooter() string {
-	help := "↑/↓ move · c/space collapse · Enter switch/create · n new chat · b shelve · q quit"
+	help := "↑/↓ move · c/space collapse · Enter switch/create · n new chat · b shelve · ctrl+x delete · q quit"
 	if m.state.SidebarMode {
-		help = "↑/↓ move · Enter bring/switch · b shelve · c collapse · q quit"
+		help = "↑/↓ move · Enter bring/switch · b shelve · ctrl+x delete · c collapse · q quit"
 	}
 	content := fmt.Sprintf("status: %s\n%s", m.status, help)
 	return m.styles.Help.Render(content)
@@ -352,6 +354,62 @@ func (m Model) activateSelected() (tea.Model, tea.Cmd) {
 		return m.activateWorkspace(item.Workspace)
 	}
 	return m.activateWorkspace(item.Workspace)
+}
+
+func (m Model) removeSession() (tea.Model, tea.Cmd) {
+	items := m.visibleItems()
+	if len(items) == 0 || m.selected < 0 || m.selected >= len(items) {
+		m.status = "Pick a project or agent"
+		return m, nil
+	}
+
+	item := items[m.selected]
+	if item.Kind == kindAgent {
+		return m.removeAgentPane(item)
+	}
+	return m.removeWorkspaceSession(item.Workspace)
+}
+
+func (m Model) removeAgentPane(item visibleItem) (tea.Model, tea.Cmd) {
+	if item.AgentIndex < 0 || item.AgentIndex >= len(item.Workspace.Agents) {
+		m.status = "Pick an agent"
+		return m, nil
+	}
+	ag := item.Workspace.Agents[item.AgentIndex]
+	if ag.Pane == "" {
+		m.status = fmt.Sprintf("No live pane to delete for %s", ag.Name)
+		return m, nil
+	}
+	if err := multiplexer.KillPane(m.state.Multiplexer.Kind, ag.Pane); err != nil {
+		m.status = fmt.Sprintf("Delete failed: %v", err)
+		return m, nil
+	}
+	m.status = fmt.Sprintf("Deleted pane for %s", ag.Name)
+	return m, m.doRefresh()
+}
+
+func (m Model) removeWorkspaceSession(ws workspace.Workspace) (tea.Model, tea.Cmd) {
+	session := m.sessionFromWorkspace(ws)
+	if session == nil {
+		m.status = fmt.Sprintf("No session to delete for %s", ws.Name)
+		return m, nil
+	}
+	sessionName := session.Name
+	if sessionName == m.state.CurrentSession {
+		m.status = fmt.Sprintf("Can't delete current session %s", sessionName)
+		return m, nil
+	}
+	if sessionName == multiplexer.ShelfSessionName {
+		m.status = fmt.Sprintf("Can't delete shelf session %s", sessionName)
+		return m, nil
+	}
+
+	if err := multiplexer.KillSession(m.state.Multiplexer.Kind, sessionName); err != nil {
+		m.status = fmt.Sprintf("Delete failed: %v", err)
+		return m, nil
+	}
+	m.status = fmt.Sprintf("Deleted session %s", sessionName)
+	return m, m.doRefresh()
 }
 
 func (m Model) shelveMainPane() (tea.Model, tea.Cmd) {

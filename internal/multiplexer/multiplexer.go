@@ -562,6 +562,36 @@ func NewSession(kind Kind, name, path string) error {
 	}
 }
 
+func KillSession(kind Kind, name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("session name is required")
+	}
+	switch kind {
+	case Tmux:
+		return exec.Command("tmux", "kill-session", "-t", name).Run()
+	case Zellij:
+		return fmt.Errorf("zellij session deletion is not implemented yet")
+	default:
+		return fmt.Errorf("not running inside a supported multiplexer")
+	}
+}
+
+func KillPane(kind Kind, paneID string) error {
+	paneID = strings.TrimSpace(paneID)
+	if paneID == "" {
+		return fmt.Errorf("pane id is required")
+	}
+	switch kind {
+	case Tmux:
+		return exec.Command("tmux", "kill-pane", "-t", paneID).Run()
+	case Zellij:
+		return fmt.Errorf("zellij pane deletion is not implemented yet")
+	default:
+		return fmt.Errorf("not running inside a supported multiplexer")
+	}
+}
+
 func tmuxSessions() []Session {
 	format := strings.Join([]string{
 		"#{session_name}",
