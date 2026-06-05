@@ -28,6 +28,7 @@ type State struct {
 	CurrentSession string
 	SidebarMode    bool
 	Theme          theme.Theme
+	Spinner        string
 }
 
 type RefreshFunc func() (State, error)
@@ -152,7 +153,7 @@ func New(state State, refresh RefreshFunc) Model {
 		status:       status,
 		refresh:      refresh,
 		styles:       styles,
-		renderer:     newItemRenderer(state.Theme, loadCollapsedProjects()),
+		renderer:     newItemRenderer(state.Theme, loadCollapsedProjects(), state.Spinner),
 		agentOffsets: map[string]int{},
 	}
 	m.rebuildItems()
@@ -216,16 +217,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.shelveMainPane()
 		case "n":
 			return m.newAgentForSelected()
+		case "s":
+			m.renderer.CycleSpinner()
+			m.status = fmt.Sprintf("Spinner: %s", m.renderer.SpinnerName())
+			m.renderContent()
+			return m, nil
 		case "up", "k":
 			m.moveSelection(-1)
 			return m, nil
 		case "down", "j":
 			m.moveSelection(1)
 			return m, nil
-		case "[":
+		case "[", "h":
 			m.moveWorkspaceSelection(-1)
 			return m, nil
-		case "]":
+		case "]", "l":
 			m.moveWorkspaceSelection(1)
 			return m, nil
 		case "home":
@@ -1544,10 +1550,10 @@ func (m Model) viewHeader() string {
 }
 
 func (m Model) viewFooter() string {
-	help := "↑/↓ move · / search · ctrl+p palette · ctrl+w worktree · ctrl+r cleanup · [/] projects · c/space collapse · Enter switch/create · n new chat · b shelve · ctrl+x delete · q quit"
+	help := "↑/↓ move · / search · ctrl+p palette · ctrl+w worktree · ctrl+r cleanup · [/] projects · c/space collapse · Enter switch/create · n new chat · b shelve · s spinner · ctrl+x delete · q quit"
 
 	if m.state.SidebarMode {
-		help = "↑/↓ move · / search · ctrl+p palette · ctrl+w worktree · ctrl+r cleanup · [/] projects · Enter bring/switch · b shelve · ctrl+x delete · c collapse · q quit"
+		help = "↑/↓ move · / search · ctrl+p palette · ctrl+w worktree · ctrl+r cleanup · [/] projects · Enter bring/switch · b shelve · ctrl+x delete · c collapse · s spinner · q quit"
 	}
 	if m.searchActive {
 		help = "type to filter · ↑/↓ move · Enter select · ctrl+u clear · Esc close search"

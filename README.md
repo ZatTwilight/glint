@@ -38,7 +38,8 @@ Example:
     "~/Documents/dev",
     "~/work"
   ],
-  "theme": "auto"
+  "theme": "auto",
+  "spinner": "points"
 }
 ```
 
@@ -52,6 +53,12 @@ Themes:
 - `dracula`
 - `catppuccin`
 - `kanagawa`
+
+Spinners:
+
+- Set `spinner` to `points`, `dot`, `minidot`, `line`, `jump`, `pulse`, `meter`, `hamburger`, `ellipsis`, `globe`, `moon`, or `monkey`.
+- Or override temporarily with `GLINT_SPINNER=moon glint`.
+- Press `s` in the UI to cycle spinners while testing.
 
 ## Agent hooks
 

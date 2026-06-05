@@ -90,6 +90,15 @@ func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
 
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 func runApp(sidebarMode bool) {
 	if sidebarMode {
 		_ = multiplexer.MarkCurrentPaneSidebar()
@@ -102,6 +111,7 @@ func runApp(sidebarMode bool) {
 	}
 
 	appTheme := theme.Resolve(cfg.Theme)
+	spinnerName := firstNonEmpty(os.Getenv("GLINT_SPINNER"), cfg.Spinner)
 
 	refresh := func() (ui.State, error) {
 		mux := multiplexer.Detect()
@@ -130,6 +140,7 @@ func runApp(sidebarMode bool) {
 			CurrentSession: currentSession,
 			SidebarMode:    sidebarMode,
 			Theme:          appTheme,
+			Spinner:        spinnerName,
 		}, nil
 	}
 
@@ -137,6 +148,7 @@ func runApp(sidebarMode bool) {
 		WorkspaceRoots: cfg.WorkspaceRoots,
 		SidebarMode:    sidebarMode,
 		Theme:          appTheme,
+		Spinner:        spinnerName,
 	}
 
 	model := ui.New(state, refresh)

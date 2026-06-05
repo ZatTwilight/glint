@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ZatTwilight/glint/internal/agent"
@@ -87,7 +88,14 @@ func scanRoot(root string, activeSessions map[string]bool, activePaths map[strin
 		return nil, err
 	}
 
-	workspaces := make([]Workspace, 0, len(entries))
+	type scanTask struct {
+		parent   Workspace
+		isJJDir  bool
+		repoRoot string
+	}
+
+	tasks := make([]scanTask, 0, len(entries))
+	seenJJRepos := map[string]bool{}
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
@@ -100,44 +108,61 @@ func scanRoot(root string, activeSessions map[string]bool, activePaths map[strin
 		}
 
 		isJJDir := isJJRepository(path)
-		isGitDir := !isJJDir && isGitRepository(path)
-
-		parent := Workspace{
-			Name:         entry.Name(),
-			Path:         path,
-			Root:         root,
-			ActiveInTmux: activeSessions[entry.Name()] || activePaths[filepath.Clean(path)],
-			ModifiedAt:   info.ModTime(),
-			GitType:      none,
-			VCS:          VCSNone,
-		}
+		repoRoot := ""
 		if isJJDir {
-			for _, ws := range scanJJWorkspaces(parent, activeSessions, activePaths, programs) {
-				workspaces = append(workspaces, ws)
+			repoRoot = jjSharedRepoRoot(path)
+			if seenJJRepos[repoRoot] {
+				continue
 			}
-		} else if !isGitDir {
-			parent.Agents = agent.ScanWorkspaceWithPrograms(parent.Name, parent.Path, programs)
-			workspaces = append(workspaces, parent)
-
-			// s, _ := json.MarshalIndent(parent, "	", "  ")
-			// fmt.Printf("Parent	%s\n", string(s))
-		} else {
-			parent.VCS = VCSGit
-			// fmt.Printf("Checking %s\n", path)
-			for _, wt := range scanWorktrees(parent, activeSessions, activePaths, programs) {
-				workspaces = append(workspaces, wt)
-				// s, _ := json.MarshalIndent(wt, "	", "  ")
-				// fmt.Printf("Wt	%s\n", string(s))
-			}
+			seenJJRepos[repoRoot] = true
 		}
 
+		tasks = append(tasks, scanTask{
+			parent: Workspace{
+				Name:         entry.Name(),
+				Path:         path,
+				Root:         root,
+				ActiveInTmux: activeSessions[entry.Name()] || activePaths[filepath.Clean(path)],
+				ModifiedAt:   info.ModTime(),
+				GitType:      none,
+				VCS:          VCSNone,
+			},
+			isJJDir:  isJJDir,
+			repoRoot: repoRoot,
+		})
 	}
 
-	// fmt.Println("Workspaces")
-	// for _, wp := range workspaces {
-	// 	s, _ := json.MarshalIndent(wp, "", "  ")
-	// 	fmt.Println(string(s))
-	// }
+	results := make([][]Workspace, len(tasks))
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 8)
+	for i, task := range tasks {
+		wg.Add(1)
+		go func(i int, task scanTask) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			parent := task.parent
+			if task.isJJDir {
+				results[i] = scanJJWorkspaces(parent, task.repoRoot, activeSessions, activePaths, programs)
+				return
+			}
+			if !isGitRepository(parent.Path) {
+				parent.Agents = agent.ScanWorkspaceWithPrograms(parent.Name, parent.Path, programs)
+				results[i] = []Workspace{parent}
+				return
+			}
+
+			parent.VCS = VCSGit
+			results[i] = scanWorktrees(parent, activeSessions, activePaths, programs)
+		}(i, task)
+	}
+	wg.Wait()
+
+	workspaces := make([]Workspace, 0, len(entries))
+	for _, result := range results {
+		workspaces = append(workspaces, result...)
+	}
 	return workspaces, nil
 }
 
@@ -163,11 +188,8 @@ type WorktreeResp struct {
 
 func isJJRepository(path string) bool {
 	jjPath := filepath.Join(path, ".jj")
-	if info, err := os.Stat(jjPath); err == nil && info.IsDir() {
-		return true
-	}
-	cmd := exec.Command("jj", "-R", path, "--ignore-working-copy", "workspace", "root")
-	return cmd.Run() == nil
+	info, err := os.Stat(jjPath)
+	return err == nil && info.IsDir()
 }
 
 func jjSharedRepoRoot(workspacePath string) string {
@@ -220,8 +242,7 @@ type JJWorkspaceResp struct {
 	ModTime time.Time
 }
 
-func scanJJWorkspaces(parent Workspace, activeSessions map[string]bool, activePaths map[string]bool, programs []multiplexer.MultiplexerProgram) []Workspace {
-	repoRoot := jjSharedRepoRoot(parent.Path)
+func scanJJWorkspaces(parent Workspace, repoRoot string, activeSessions map[string]bool, activePaths map[string]bool, programs []multiplexer.MultiplexerProgram) []Workspace {
 	out, err := exec.Command("jj", "-R", parent.Path, "--ignore-working-copy", "workspace", "list", "-T", "name ++ \"\\t\" ++ root ++ \"\\n\"").Output()
 	if err != nil {
 		return nil

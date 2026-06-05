@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"charm.land/bubbles/v2/spinner"
 	"charm.land/lipgloss/v2"
 	"github.com/ZatTwilight/glint/internal/agent"
 	"github.com/ZatTwilight/glint/internal/theme"
@@ -17,8 +18,9 @@ import (
 // Unlike bubbles/list delegates, this renderer can return any number of lines
 // per item. That makes it a good playground for dynamic item heights.
 type itemRenderer struct {
-	styles    itemRendererStyles
-	collapsed map[string]bool
+	styles       itemRendererStyles
+	collapsed    map[string]bool
+	spinnerIndex int
 }
 
 type itemRendererStyles struct {
@@ -29,12 +31,43 @@ type itemRendererStyles struct {
 	ActiveTitle   lipgloss.Style
 }
 
-func newItemRenderer(t theme.Theme, collapsed map[string]bool) itemRenderer {
+type spinnerChoice struct {
+	name    string
+	spinner spinner.Spinner
+}
+
+var spinnerChoices = []spinnerChoice{
+	{name: "points", spinner: spinner.Points},
+	{name: "dot", spinner: spinner.Dot},
+	{name: "minidot", spinner: spinner.MiniDot},
+	{name: "line", spinner: spinner.Line},
+	{name: "jump", spinner: spinner.Jump},
+	{name: "pulse", spinner: spinner.Pulse},
+	{name: "meter", spinner: spinner.Meter},
+	{name: "hamburger", spinner: spinner.Hamburger},
+	{name: "ellipsis", spinner: spinner.Ellipsis},
+	{name: "globe", spinner: spinner.Globe},
+	{name: "moon", spinner: spinner.Moon},
+	{name: "monkey", spinner: spinner.Monkey},
+}
+
+func spinnerIndex(name string) int {
+	name = strings.ToLower(strings.TrimSpace(name))
+	for idx, choice := range spinnerChoices {
+		if choice.name == name {
+			return idx
+		}
+	}
+	return 0
+}
+
+func newItemRenderer(t theme.Theme, collapsed map[string]bool, spinnerName string) itemRenderer {
 	if collapsed == nil {
 		collapsed = map[string]bool{}
 	}
 	return itemRenderer{
-		collapsed: collapsed,
+		collapsed:    collapsed,
+		spinnerIndex: spinnerIndex(spinnerName),
 		styles: itemRendererStyles{
 			Title:       lipgloss.NewStyle().Foreground(t.Text).PaddingLeft(2),
 			Description: lipgloss.NewStyle().Foreground(t.Muted).PaddingLeft(2),
@@ -60,6 +93,14 @@ func (r itemRenderer) IsCollapsed(path string) bool {
 	return r.collapsed[path]
 }
 
+func (r itemRenderer) SpinnerName() string {
+	return spinnerChoices[r.spinnerIndex].name
+}
+
+func (r *itemRenderer) CycleSpinner() {
+	r.spinnerIndex = (r.spinnerIndex + 1) % len(spinnerChoices)
+}
+
 func (r itemRenderer) RenderVisible(item visibleItem, selected bool, width int, currentWindow string) string {
 	if item.Kind == kindAgent && item.AgentIndex >= 0 && item.AgentIndex < len(item.Workspace.Agents) {
 		ag := item.Workspace.Agents[item.AgentIndex]
@@ -75,7 +116,7 @@ func (r itemRenderer) RenderVisible(item visibleItem, selected bool, width int, 
 			icon = "↓ "
 		}
 		left := fmt.Sprintf("%s%s %s", icon, agent.Icon(ag.Name), quoteTask(ag.Task))
-		right := agentTimeStatus(ag)
+		right := r.agentTimeStatus(ag)
 		line := util.RightAlignLine(left, right, rowWidth)
 		if selected {
 			return r.styles.SelectedTitle.Render(line)
@@ -144,11 +185,11 @@ func workspaceActivityTime(ws workspace.Workspace) time.Time {
 	return latest
 }
 
-func agentTimeStatus(ag agent.Agent) string {
+func (r itemRenderer) agentTimeStatus(ag agent.Agent) string {
 	rel := relativeTime(ag.Activity)
 	switch agent.DisplayStatus(ag.Status) {
 	case "working":
-		return strings.TrimSpace(spinnerFrame() + " " + rel)
+		return strings.TrimSpace(r.spinnerFrame() + " " + rel)
 	case "done":
 		if rel == "now" {
 			return "✓ now"
@@ -157,9 +198,13 @@ func agentTimeStatus(ag agent.Agent) string {
 	return rel
 }
 
-func spinnerFrame() string {
-	frames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
-	return frames[(time.Now().UnixMilli()/120)%int64(len(frames))]
+func (r itemRenderer) spinnerFrame() string {
+	selected := spinnerChoices[r.spinnerIndex].spinner
+	if len(selected.Frames) == 0 {
+		return ""
+	}
+	frame := (time.Now().UnixNano() / selected.FPS.Nanoseconds()) % int64(len(selected.Frames))
+	return selected.Frames[frame]
 }
 
 func quoteTask(task string) string {

@@ -11,6 +11,7 @@ import (
 type Config struct {
 	WorkspaceRoots []string `json:"workspace_roots"`
 	Theme          string   `json:"theme"`
+	Spinner        string   `json:"spinner"`
 }
 
 func Load() (Config, error) {
@@ -38,6 +39,9 @@ func Load() (Config, error) {
 	if cfg.Theme == "" {
 		cfg.Theme = defaults.Theme
 	}
+	if cfg.Spinner == "" {
+		cfg.Spinner = defaults.Spinner
+	}
 
 	for i, root := range cfg.WorkspaceRoots {
 		expanded, err := Expand(root)
@@ -52,9 +56,9 @@ func Load() (Config, error) {
 func Default() Config {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return Config{WorkspaceRoots: []string{"."}}
+		return Config{WorkspaceRoots: []string{"."}, Theme: "auto", Spinner: "points"}
 	}
-	return Config{WorkspaceRoots: []string{filepath.Join(home, "Documents", "dev")}, Theme: "auto"}
+	return Config{WorkspaceRoots: []string{filepath.Join(home, "Documents", "dev")}, Theme: "auto", Spinner: "points"}
 }
 
 func Path() (string, error) {
