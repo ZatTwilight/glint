@@ -15,6 +15,7 @@ import (
 	"github.com/ZatTwilight/glint/internal/multiplexer"
 	"github.com/ZatTwilight/glint/internal/theme"
 	"github.com/ZatTwilight/glint/internal/util"
+	"github.com/ZatTwilight/glint/internal/vcs"
 	"github.com/ZatTwilight/glint/internal/workspace"
 	"github.com/sahilm/fuzzy"
 )
@@ -44,6 +45,7 @@ type Model struct {
 	searchQuery   string
 	paletteActive bool
 	paletteQuery  string
+	worktreeFlow  worktreeFlow
 }
 
 type itemKind int
@@ -80,11 +82,38 @@ const (
 	paletteActionNone paletteActionKind = iota
 	paletteActionNewAgent
 	paletteActionShelveMain
+	paletteActionCreateWorktree
 )
 
 type paletteAction struct {
 	Kind      paletteActionKind
 	Workspace workspace.Workspace
+}
+
+type worktreeFlowStep int
+
+const (
+	worktreeStepNone worktreeFlowStep = iota
+	worktreeStepBranch
+	worktreeStepName
+	worktreeStepPath
+	worktreeStepConfirmBranch
+	worktreeStepNewBranch
+)
+
+type worktreeFlow struct {
+	Active       bool
+	Step         worktreeFlowStep
+	Workspace    workspace.Workspace
+	Branches     []vcs.Branch
+	CheckedOut   map[string]bool
+	Query        string
+	Pristine     bool
+	Selected     int
+	Branch       vcs.Branch
+	WorktreeName string
+	WorktreePath string
+	NewBranch    bool
 }
 
 func New(state State, refresh RefreshFunc) Model {
@@ -124,6 +153,9 @@ type animationTickMsg time.Time
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		if m.worktreeFlow.Active {
+			return m.updateWorktreeFlow(msg)
+		}
 		if m.paletteActive {
 			return m.updatePalette(msg)
 		}
@@ -151,6 +183,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.renderContent()
 			m.ensureSelectedVisible()
 			return m, nil
+		case "ctrl+w":
+			return m.startWorktreeFlowForSelected()
 		case " ", "space", "tab", "c":
 			m.toggleSelected()
 			return m, nil
@@ -373,6 +407,235 @@ func dropLastRune(s string) string {
 	return string(runes[:len(runes)-1])
 }
 
+func (m Model) startWorktreeFlowForSelected() (tea.Model, tea.Cmd) {
+	ws, ok := m.selectedWorkspace()
+	if !ok {
+		m.status = "Pick a repo/workspace"
+		return m, nil
+	}
+	return m.startWorktreeFlow(ws)
+}
+
+func (m Model) startWorktreeFlow(ws workspace.Workspace) (tea.Model, tea.Cmd) {
+	branches, err := vcs.GitBranches(ws.Path)
+	if err != nil {
+		m.status = fmt.Sprintf("Branches failed: %v", err)
+		return m, nil
+	}
+	if len(branches) == 0 {
+		m.status = "No branches found"
+		return m, nil
+	}
+	worktrees, err := vcs.GitWorktrees(ws.Path)
+	if err != nil {
+		m.status = fmt.Sprintf("Worktrees failed: %v", err)
+		return m, nil
+	}
+	checkedOut := map[string]bool{}
+	for _, wt := range worktrees {
+		checkedOut[normalizeBranchRef(wt.Branch)] = true
+	}
+	m.searchActive = false
+	m.paletteActive = false
+	m.worktreeFlow = worktreeFlow{Active: true, Step: worktreeStepBranch, Workspace: ws, Branches: branches, CheckedOut: checkedOut}
+	m.status = "Create worktree: pick base branch"
+	m.renderContent()
+	m.ensureSelectedVisible()
+	return m, nil
+}
+
+func (m Model) updateWorktreeFlow(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
+	case "esc":
+		m.worktreeFlow = worktreeFlow{}
+		m.status = "Enter switches or creates sessions"
+		m.renderContent()
+		return m, nil
+	case "up":
+		m.moveWorktreeFlowSelection(-1)
+		return m, nil
+	case "down":
+		m.moveWorktreeFlowSelection(1)
+		return m, nil
+	case "backspace", "ctrl+h":
+		if m.worktreeFlow.Pristine {
+			m.worktreeFlow.Query = ""
+			m.worktreeFlow.Pristine = false
+		} else {
+			m.worktreeFlow.Query = dropLastRune(m.worktreeFlow.Query)
+		}
+		m.worktreeFlow.Selected = 0
+		m.renderContent()
+		return m, nil
+	case "ctrl+u":
+		m.worktreeFlow.Query = ""
+		m.worktreeFlow.Pristine = false
+		m.worktreeFlow.Selected = 0
+		m.renderContent()
+		return m, nil
+	case " ", "space":
+		m.appendWorktreeFlowInput(" ")
+		m.renderContent()
+		return m, nil
+	case "y":
+		if m.worktreeFlow.Step == worktreeStepConfirmBranch {
+			m.worktreeFlow.NewBranch = true
+			m.worktreeFlow.Step = worktreeStepNewBranch
+			m.worktreeFlow.Query = m.worktreeFlow.WorktreeName
+			m.worktreeFlow.Pristine = true
+			m.status = "New branch name"
+			m.renderContent()
+			return m, nil
+		}
+		m.appendWorktreeFlowInput("y")
+		m.renderContent()
+		return m, nil
+	case "n":
+		if m.worktreeFlow.Step == worktreeStepConfirmBranch {
+			m.worktreeFlow.NewBranch = false
+			return m.createWorktreeFromFlow()
+		}
+		m.appendWorktreeFlowInput("n")
+		m.renderContent()
+		return m, nil
+	case "enter":
+		switch m.worktreeFlow.Step {
+		case worktreeStepBranch:
+			branches := m.filteredWorktreeBranches()
+			if len(branches) == 0 || m.worktreeFlow.Selected >= len(branches) {
+				m.status = "Pick a branch"
+				return m, nil
+			}
+			branch := branches[m.worktreeFlow.Selected]
+			m.worktreeFlow.Branch = branch
+			m.worktreeFlow.Step = worktreeStepName
+			m.worktreeFlow.Query = vcs.SuggestedWorktreeName(branch.Name)
+			m.worktreeFlow.Pristine = true
+			m.status = "Worktree name"
+			m.renderContent()
+			return m, nil
+		case worktreeStepName:
+			name := strings.TrimSpace(m.worktreeFlow.Query)
+			if name == "" {
+				m.status = "Enter a worktree name"
+				return m, nil
+			}
+			m.worktreeFlow.WorktreeName = name
+			m.worktreeFlow.Step = worktreeStepPath
+			m.worktreeFlow.Query = name
+			m.worktreeFlow.Pristine = true
+			m.status = fmt.Sprintf("Worktree path relative to %s", vcs.SuggestedWorktreeParent(m.worktreeFlow.Workspace.Path))
+			m.renderContent()
+			return m, nil
+		case worktreeStepPath:
+			relPath := strings.TrimSpace(m.worktreeFlow.Query)
+			if relPath == "" {
+				m.status = "Enter a worktree path"
+				return m, nil
+			}
+			m.worktreeFlow.WorktreePath = vcs.SuggestedWorktreePath(m.worktreeFlow.Workspace.Path, relPath)
+			m.worktreeFlow.Query = ""
+			m.worktreeFlow.Pristine = false
+			if m.branchAlreadyCheckedOut(m.worktreeFlow.Branch) {
+				m.worktreeFlow.NewBranch = true
+				m.worktreeFlow.Step = worktreeStepNewBranch
+				m.worktreeFlow.Query = m.worktreeFlow.WorktreeName
+				m.worktreeFlow.Pristine = true
+				m.status = "Branch is already checked out; enter new branch name"
+				m.renderContent()
+				return m, nil
+			}
+			m.worktreeFlow.Step = worktreeStepConfirmBranch
+			m.status = "Create a new branch for this worktree? y/n"
+			m.renderContent()
+			return m, nil
+		case worktreeStepConfirmBranch:
+			m.worktreeFlow.NewBranch = false
+			return m.createWorktreeFromFlow()
+		case worktreeStepNewBranch:
+			if strings.TrimSpace(m.worktreeFlow.Query) == "" {
+				m.status = "Enter a new branch name"
+				return m, nil
+			}
+			return m.createWorktreeFromFlow()
+		}
+	}
+	if printableKey(msg.String()) {
+		m.appendWorktreeFlowInput(msg.String())
+		m.renderContent()
+	}
+	return m, nil
+}
+
+func (m *Model) appendWorktreeFlowInput(value string) {
+	if m.worktreeFlow.Pristine {
+		m.worktreeFlow.Query = ""
+		m.worktreeFlow.Pristine = false
+	}
+	m.worktreeFlow.Query += value
+	if m.worktreeFlow.Step == worktreeStepBranch {
+		m.worktreeFlow.Selected = 0
+	}
+}
+
+func (m Model) branchAlreadyCheckedOut(branch vcs.Branch) bool {
+	return m.worktreeFlow.CheckedOut[normalizeBranchRef(branch.Ref)] || m.worktreeFlow.CheckedOut[normalizeBranchRef(branch.Name)]
+}
+
+func normalizeBranchRef(ref string) string {
+	ref = strings.TrimSpace(ref)
+	ref = strings.TrimPrefix(ref, "refs/heads/")
+	ref = strings.TrimPrefix(ref, "refs/remotes/")
+	return strings.TrimPrefix(ref, "origin/")
+}
+
+func (m *Model) moveWorktreeFlowSelection(delta int) {
+	if m.worktreeFlow.Step != worktreeStepBranch {
+		return
+	}
+	branches := m.filteredWorktreeBranches()
+	if len(branches) == 0 {
+		return
+	}
+	m.worktreeFlow.Selected = min(max(0, m.worktreeFlow.Selected+delta), len(branches)-1)
+	m.renderContent()
+	m.ensureSelectedVisible()
+}
+
+func (m Model) filteredWorktreeBranches() []vcs.Branch {
+	query := strings.TrimSpace(m.worktreeFlow.Query)
+	branches := []vcs.Branch{}
+	for _, branch := range m.worktreeFlow.Branches {
+		text := strings.Join([]string{branch.Name, branch.Ref}, " ")
+		if query == "" || fuzzyMatch(query, text) {
+			branches = append(branches, branch)
+		}
+	}
+	if query != "" {
+		sort.SliceStable(branches, func(i, j int) bool {
+			return weightedMatchScore(query, branches[i].Name, 100) > weightedMatchScore(query, branches[j].Name, 100)
+		})
+	}
+	return branches
+}
+
+func (m Model) createWorktreeFromFlow() (tea.Model, tea.Cmd) {
+	flow := m.worktreeFlow
+	newBranch := ""
+	if flow.NewBranch {
+		newBranch = strings.TrimSpace(flow.Query)
+	}
+	if err := vcs.GitCreateWorktree(vcs.CreateWorktreeRequest{RepoPath: flow.Workspace.Path, WorktreePath: flow.WorktreePath, BaseRef: flow.Branch.Name, NewBranchName: newBranch}); err != nil {
+		m.status = fmt.Sprintf("Create worktree failed: %v", err)
+		return m, nil
+	}
+	m.worktreeFlow = worktreeFlow{}
+	m.status = fmt.Sprintf("Created worktree %s", flow.WorktreePath)
+	return m, m.doRefresh()
+}
+
 func initialRefreshTick() tea.Cmd {
 	return tea.Tick(time.Millisecond, func(t time.Time) tea.Msg { return refreshTickMsg(t) })
 }
@@ -454,16 +717,30 @@ func (m Model) paletteTargets() []paletteTarget {
 			continue
 		}
 		subtitle := paletteWorkspaceSubtitle(ws)
+		label := paletteWorkspaceLabel(ws)
 		target := paletteTarget{
 			Item:     visibleItem{Kind: kindWorkspace, Workspace: ws, AgentIndex: -1},
-			Label:    "workspace",
+			Label:    label,
 			Title:    ws.Name,
 			Subtitle: subtitle,
-			Search:   strings.Join([]string{"workspace", ws.Name, subtitle, workspaceSearchText(ws)}, " "),
+			Search:   strings.Join([]string{label, "workspace", "repo", "worktree", ws.Name, subtitle, workspaceSearchText(ws)}, " "),
 		}
 		if score, ok := paletteTargetScore(query, target); ok {
 			target.Score = score + 25
 			targets = append(targets, target)
+		}
+		if ws.GitType != 0 {
+			createWorktreeTarget := paletteTarget{
+				Action:   paletteAction{Kind: paletteActionCreateWorktree, Workspace: ws},
+				Label:    "action",
+				Title:    "Create worktree in " + ws.Name,
+				Subtitle: ws.Path,
+				Search:   strings.Join([]string{"action create new worktree", ws.Name, ws.Path, ws.ParentName, ws.Branch}, " "),
+			}
+			if score, ok := paletteTargetScore(query, createWorktreeTarget); ok {
+				createWorktreeTarget.Score = score + 15
+				targets = append(targets, createWorktreeTarget)
+			}
 		}
 		if m.state.SidebarMode {
 			actionTarget := paletteTarget{
@@ -569,6 +846,16 @@ func indexPenalty(idx int) int {
 	return idx
 }
 
+func paletteWorkspaceLabel(ws workspace.Workspace) string {
+	if ws.IsWorktree {
+		return "worktree"
+	}
+	if ws.GitType != 0 {
+		return "repo"
+	}
+	return "workspace"
+}
+
 func paletteWorkspaceSubtitle(ws workspace.Workspace) string {
 	parts := []string{ws.Path}
 	if ws.ParentName != "" {
@@ -651,6 +938,10 @@ func (m Model) viewportInnerHeight() int {
 }
 
 func (m *Model) renderContent() {
+	if m.worktreeFlow.Active {
+		m.renderWorktreeFlowContent()
+		return
+	}
 	if m.paletteActive {
 		m.renderPaletteContent()
 		return
@@ -680,6 +971,57 @@ func (m *Model) renderContent() {
 	}
 	lines = append(lines, "", "", "")
 
+	m.viewport.SetContent(strings.Join(lines, "\n"))
+}
+
+func (m *Model) renderWorktreeFlowContent() {
+	lines := []string{}
+	m.spans = nil
+	flow := m.worktreeFlow
+	lines = append(lines, m.renderer.styles.Title.Render("Create worktree in "+flow.Workspace.Name))
+	lines = append(lines, m.renderer.styles.Description.Render(flow.Workspace.Path), "")
+	switch flow.Step {
+	case worktreeStepBranch:
+		lines = append(lines, m.renderer.styles.Description.Render("Branch: "+flow.Query), "")
+		branches := m.filteredWorktreeBranches()
+		for idx, branch := range branches {
+			start := len(lines)
+			label := "branch"
+			if branch.Remote {
+				label = "remote"
+			}
+			title := m.styles.Badge.Render(label) + " " + branch.Name
+			subtitle := branch.Ref
+			if m.branchAlreadyCheckedOut(branch) {
+				subtitle += " · checked out; new branch required"
+			}
+			if idx == flow.Selected {
+				lines = append(lines, m.renderer.styles.SelectedTitle.Render(title), m.renderer.styles.SelectedDesc.Render(subtitle))
+			} else {
+				lines = append(lines, m.renderer.styles.Title.Render(title), m.renderer.styles.Description.Render(subtitle))
+			}
+			lines = append(lines, "")
+			m.spans = append(m.spans, itemSpan{start: start, end: len(lines)})
+		}
+	case worktreeStepName:
+		lines = append(lines, m.renderer.styles.Title.Render("Worktree name"))
+		lines = append(lines, m.renderer.styles.SelectedDesc.Render(flow.Query))
+		lines = append(lines, m.renderer.styles.Description.Render("Enter accepts default · typing replaces it"))
+	case worktreeStepPath:
+		lines = append(lines, m.renderer.styles.Title.Render("Worktree path"))
+		lines = append(lines, m.renderer.styles.Description.Render("Relative to: "+vcs.SuggestedWorktreeParent(flow.Workspace.Path)))
+		lines = append(lines, m.renderer.styles.SelectedDesc.Render(flow.Query))
+		lines = append(lines, m.renderer.styles.Description.Render("Enter accepts default · typing replaces it"))
+	case worktreeStepConfirmBranch:
+		lines = append(lines, m.renderer.styles.Title.Render("Base branch: "+flow.Branch.Name))
+		lines = append(lines, m.renderer.styles.Description.Render("Path: "+flow.WorktreePath), "")
+		lines = append(lines, m.renderer.styles.SelectedTitle.Render("Create a new branch for this worktree?"))
+		lines = append(lines, m.renderer.styles.Description.Render("y yes · n no · Enter no"))
+	case worktreeStepNewBranch:
+		lines = append(lines, m.renderer.styles.Title.Render("New branch name"))
+		lines = append(lines, m.renderer.styles.SelectedDesc.Render(flow.Query))
+	}
+	lines = append(lines, "", "", "")
 	m.viewport.SetContent(strings.Join(lines, "\n"))
 }
 
@@ -796,6 +1138,9 @@ func (m Model) viewHeader() string {
 	if m.paletteActive {
 		header = fmt.Sprintf("%s  > %s", header, m.paletteQuery)
 	}
+	if m.worktreeFlow.Active {
+		header = fmt.Sprintf("%s  worktree", header)
+	}
 	return m.styles.Header.Render(header)
 }
 
@@ -809,6 +1154,9 @@ func (m Model) viewFooter() string {
 	}
 	if m.paletteActive {
 		help = "type command · ↑/↓ move · Enter run/open · ctrl+u clear · Esc close palette"
+	}
+	if m.worktreeFlow.Active {
+		help = "type to filter/edit · ↑/↓ move branches · Enter next/create · y/n choose · Esc cancel"
 	}
 	content := fmt.Sprintf("status: %s\n%s", m.status, help)
 	return m.styles.Help.Render(content)
@@ -850,6 +1198,8 @@ func (m Model) activatePaletteAction(action paletteAction) (tea.Model, tea.Cmd) 
 		return m.newAgentForWorkspace(action.Workspace)
 	case paletteActionShelveMain:
 		return m.shelveMainPane()
+	case paletteActionCreateWorktree:
+		return m.startWorktreeFlow(action.Workspace)
 	default:
 		m.status = "Unknown palette action"
 		return m, nil
