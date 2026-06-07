@@ -35,6 +35,15 @@ func main() {
 		case "sidebar":
 			runApp(true)
 			return
+		case "palette":
+			runPalette()
+			return
+		case "popup":
+			if err := runPopup(); err != nil {
+				fmt.Fprintf(os.Stderr, "glint popup: %v\n", err)
+				os.Exit(1)
+			}
+			return
 		case "hook":
 			if err := runHook(args[1:]); err != nil {
 				fmt.Fprintf(os.Stderr, "glint hook: %v\n", err)
@@ -86,6 +95,18 @@ func runAttach() error {
 	return exec.Command("tmux", "split-window", "-h", "-b", "-l", "36", cmd).Run()
 }
 
+func runPopup() error {
+	if os.Getenv("TMUX") == "" {
+		return fmt.Errorf("popup requires tmux")
+	}
+	bin, err := os.Executable()
+	if err != nil || strings.TrimSpace(bin) == "" {
+		bin = os.Args[0]
+	}
+	cmd := shellQuote(bin) + " palette"
+	return exec.Command("tmux", "display-popup", "-E", "-w", "80%", "-h", "60%", cmd).Run()
+}
+
 func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
@@ -103,7 +124,18 @@ func runApp(sidebarMode bool) {
 	if sidebarMode {
 		_ = multiplexer.MarkCurrentPaneSidebar()
 	}
+	state, refresh := appState(sidebarMode)
+	model := ui.New(state, refresh)
+	runProgram(model)
+}
 
+func runPalette() {
+	state, refresh := appState(false)
+	model := ui.NewPalette(state, refresh)
+	runProgram(model)
+}
+
+func appState(sidebarMode bool) (ui.State, ui.RefreshFunc) {
 	cfg, err := config.Load()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "load config: %v\n", err)
@@ -144,15 +176,15 @@ func runApp(sidebarMode bool) {
 		}, nil
 	}
 
-	state := ui.State{
+	return ui.State{
 		WorkspaceRoots: cfg.WorkspaceRoots,
 		SidebarMode:    sidebarMode,
 		Theme:          appTheme,
 		Spinner:        spinnerName,
-	}
+	}, refresh
+}
 
-	model := ui.New(state, refresh)
-
+func runProgram(model tea.Model) {
 	program := tea.NewProgram(model)
 	if _, err := program.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "glint: %v\n", err)

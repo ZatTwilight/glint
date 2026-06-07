@@ -34,21 +34,22 @@ type State struct {
 type RefreshFunc func() (State, error)
 
 type Model struct {
-	state         State
-	viewport      viewport.Model
-	selected      int
-	status        string
-	refresh       RefreshFunc
-	styles        theme.Styles
-	renderer      itemRenderer
-	spans         []itemSpan
-	searchActive  bool
-	searchQuery   string
-	paletteActive bool
-	paletteQuery  string
-	worktreeFlow  worktreeFlow
-	cleanupFlow   cleanupFlow
-	agentOffsets  map[string]int
+	state             State
+	viewport          viewport.Model
+	selected          int
+	status            string
+	refresh           RefreshFunc
+	styles            theme.Styles
+	renderer          itemRenderer
+	spans             []itemSpan
+	searchActive      bool
+	searchQuery       string
+	paletteActive     bool
+	paletteStandalone bool
+	paletteQuery      string
+	worktreeFlow      worktreeFlow
+	cleanupFlow       cleanupFlow
+	agentOffsets      map[string]int
 }
 
 type itemKind int
@@ -136,6 +137,14 @@ type cleanupFlow struct {
 }
 
 func New(state State, refresh RefreshFunc) Model {
+	return newModel(state, refresh, false)
+}
+
+func NewPalette(state State, refresh RefreshFunc) Model {
+	return newModel(state, refresh, true)
+}
+
+func newModel(state State, refresh RefreshFunc, paletteMode bool) Model {
 	styles := theme.NewStyles(state.Theme)
 	vp := viewport.New()
 	vp.MouseWheelEnabled = true
@@ -143,20 +152,28 @@ func New(state State, refresh RefreshFunc) Model {
 	vp.Style = styles.Body
 
 	status := "Enter switches or creates sessions"
+	if paletteMode {
+		status = "Command palette"
+	}
 	if len(state.Workspaces) == 0 && refresh != nil {
 		status = "Loading workspaces…"
 	}
 
 	m := Model{
-		state:        state,
-		viewport:     vp,
-		status:       status,
-		refresh:      refresh,
-		styles:       styles,
-		renderer:     newItemRenderer(state.Theme, loadCollapsedProjects(), state.Spinner),
-		agentOffsets: map[string]int{},
+		state:             state,
+		viewport:          vp,
+		status:            status,
+		refresh:           refresh,
+		styles:            styles,
+		renderer:          newItemRenderer(state.Theme, loadCollapsedProjects(), state.Spinner),
+		paletteActive:     paletteMode,
+		paletteStandalone: paletteMode,
+		agentOffsets:      map[string]int{},
 	}
 	m.rebuildItems()
+	if paletteMode {
+		m.updatePaletteStatus()
+	}
 	return m
 }
 
@@ -267,13 +284,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		idx := m.selected
 		m.state = msg.state
+		m.rebuildItems()
 		if m.searchActive {
 			m.updateSearchStatus()
 		}
 		if m.paletteActive {
 			m.updatePaletteStatus()
 		}
-		m.rebuildItems()
 		if m.currentItemCount() > 0 {
 			m.selected = min(idx, m.currentItemCount()-1)
 			m.renderContent()
@@ -362,7 +379,10 @@ func (m Model) updatePalette(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c":
 		return m, tea.Quit
-	case "esc":
+	case "esc", "q":
+		if m.paletteStandalone {
+			return m, tea.Quit
+		}
 		m.paletteActive = false
 		m.paletteQuery = ""
 		m.status = "Enter switches or creates sessions"
@@ -371,7 +391,11 @@ func (m Model) updatePalette(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.ensureSelectedVisible()
 		return m, nil
 	case "enter":
-		return m.activatePaletteSelected()
+		model, cmd := m.activatePaletteSelected()
+		if m.paletteStandalone {
+			return model, tea.Batch(cmd, tea.Quit)
+		}
+		return model, cmd
 	case "up":
 		m.movePaletteSelection(-1)
 		return m, nil
