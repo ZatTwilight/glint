@@ -419,6 +419,10 @@ func (m Model) updatePalette(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+c":
 		return m, tea.Quit
 	case "esc", "q":
+		if m.paletteFiltering {
+			m.paletteFiltering = false
+			return m, nil
+		}
 		if m.paletteStandalone {
 			return m, tea.Quit
 		}
@@ -436,6 +440,9 @@ func (m Model) updatePalette(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return model, cmd
 	case "tab", "h", "l":
+		if m.paletteFiltering && (msg.String() == "h" || msg.String() == "l") {
+			break
+		}
 		m.state.Palette.LocalFirst = !m.state.Palette.LocalFirst
 		m.selected = 0
 		m.updatePaletteStatus()
@@ -444,9 +451,15 @@ func (m Model) updatePalette(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+d", "ctrl+x":
 		return m.cleanupPaletteSelectedWorkspace()
 	case "up", "k":
+		if m.paletteFiltering && msg.String() == "k" {
+			break
+		}
 		m.movePaletteSelection(-1)
 		return m, nil
 	case "down", "j":
+		if m.paletteFiltering && msg.String() == "j" {
+			break
+		}
 		m.movePaletteSelection(1)
 		return m, nil
 	case "home":
@@ -1751,9 +1764,18 @@ func (m *Model) renderPaletteContent() {
 	lines := []string{}
 	m.spans = make([]itemSpan, 0, len(targets))
 
-	prompt := "  › " + m.paletteQuery
+	filterPrompt := "  › "
+	if m.paletteFiltering {
+		filterPrompt = m.styles.Accent.Render("  / ")
+	}
+
+	prompt := filterPrompt + m.paletteQuery
 	if strings.TrimSpace(m.paletteQuery) == "" {
-		prompt = "  › " + m.styles.Muted.Render("type to filter")
+		if m.paletteFiltering {
+			prompt = filterPrompt + m.styles.Muted.Render("type to filter")
+		} else {
+			prompt = filterPrompt + m.styles.Muted.Render("press / to filter")
+		}
 	}
 	lines = append(lines, prompt)
 

@@ -27,6 +27,7 @@ type Styles struct {
 	Muted  lipgloss.Style
 	Badge  lipgloss.Style
 	Body   lipgloss.Style
+	Accent lipgloss.Style
 }
 
 func Resolve(name string) Theme {
@@ -60,9 +61,10 @@ func NewStyles(t Theme) Styles {
 			Border(lipgloss.NormalBorder(), false, false, true, false).
 			BorderForeground(t.Subtle).
 			Padding(0, 1),
-		Muted: lipgloss.NewStyle().Foreground(t.Muted),
-		Badge: lipgloss.NewStyle().Foreground(t.BadgeText).Background(t.Accent).Bold(true).Padding(0, 1),
-		Body:  lipgloss.NewStyle().Padding(1, 0),
+		Muted:  lipgloss.NewStyle().Foreground(t.Muted),
+		Badge:  lipgloss.NewStyle().Foreground(t.BadgeText).Background(t.Accent).Bold(true).Padding(0, 1),
+		Body:   lipgloss.NewStyle().Padding(1, 0),
+		Accent: lipgloss.NewStyle().Foreground(t.Accent),
 	}
 }
 
