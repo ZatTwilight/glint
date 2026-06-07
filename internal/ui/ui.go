@@ -530,6 +530,13 @@ func vcsUnit(backend vcs.Backend) string {
 	return "worktree"
 }
 
+func vcsUnitForWorkspace(ws workspace.Workspace) string {
+	if ws.VCS == workspace.VCSJujutsu {
+		return "workspace"
+	}
+	return "worktree"
+}
+
 func vcsSourceName(backend vcs.Backend) string {
 	if backend != nil && backend.Kind() == vcs.Jujutsu {
 		return "bookmark/revision"
@@ -539,6 +546,13 @@ func vcsSourceName(backend vcs.Backend) string {
 
 func vcsCleanupVerb(backend vcs.Backend) string {
 	if backend != nil && backend.Kind() == vcs.Jujutsu {
+		return "Forget"
+	}
+	return "Remove"
+}
+
+func vcsCleanupVerbForWorkspace(ws workspace.Workspace) string {
+	if ws.VCS == workspace.VCSJujutsu {
 		return "Forget"
 	}
 	return "Remove"
@@ -1049,12 +1063,13 @@ func (m Model) paletteTargets() []paletteTarget {
 			targets = append(targets, target)
 		}
 		if ws.VCS != workspace.VCSNone {
+			unit := vcsUnitForWorkspace(ws)
 			createWorktreeTarget := paletteTarget{
 				Action:   paletteAction{Kind: paletteActionCreateWorktree, Workspace: ws},
 				Label:    "action",
-				Title:    "Create " + vcsUnit(vcs.ForPath(ws.Path)) + " in " + ws.Name,
+				Title:    "Create " + unit + " in " + ws.Name,
 				Subtitle: ws.Path,
-				Search:   strings.Join([]string{"action create new worktree", ws.Name, ws.Path, ws.ParentName, ws.Branch}, " "),
+				Search:   strings.Join([]string{"action create new worktree workspace", ws.Name, ws.Path, ws.ParentName, ws.Branch}, " "),
 			}
 			if score, ok := paletteTargetScore(query, createWorktreeTarget); ok {
 				createWorktreeTarget.Score = score + 15
@@ -1063,9 +1078,9 @@ func (m Model) paletteTargets() []paletteTarget {
 			cleanupTarget := paletteTarget{
 				Action:   paletteAction{Kind: paletteActionCleanupWorktrees, Workspace: ws},
 				Label:    "action",
-				Title:    "Clean up " + vcsUnit(vcs.ForPath(ws.Path)) + "s in " + ws.Name,
-				Subtitle: vcsCleanupVerb(vcs.ForPath(ws.Path)) + " a selected " + vcsUnit(vcs.ForPath(ws.Path)),
-				Search:   strings.Join([]string{"action cleanup clean remove delete prune worktree", ws.Name, ws.Path, ws.ParentName, ws.Branch}, " "),
+				Title:    "Clean up " + unit + "s in " + ws.Name,
+				Subtitle: vcsCleanupVerbForWorkspace(ws) + " a selected " + unit,
+				Search:   strings.Join([]string{"action cleanup clean remove delete prune worktree workspace", ws.Name, ws.Path, ws.ParentName, ws.Branch}, " "),
 			}
 			if score, ok := paletteTargetScore(query, cleanupTarget); ok {
 				cleanupTarget.Score = score + 15
