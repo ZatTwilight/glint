@@ -1165,6 +1165,30 @@ func weightedMatchScore(query, text string, weight int) int {
 	if query == "" || text == "" {
 		return 0
 	}
+
+	best := singleTermMatchScore(query, text, weight)
+	queryTerms := searchTerms(query)
+	if len(queryTerms) <= 1 {
+		return max(best, 0)
+	}
+
+	// Multi-word palette queries should behave like work matching, not just
+	// phrase matching. Require every typed word to match somewhere in the
+	// candidate, then average the per-word score. This lets queries like
+	// "adding dotfiles" find tasks such as "Add dotfiles support".
+	total := 0
+	for _, term := range queryTerms {
+		termBest := singleTermMatchScore(term, text, weight)
+		if termBest == 0 {
+			return max(best, 0)
+		}
+		total += termBest
+	}
+	best = max(best, total/len(queryTerms)+10*weight)
+	return max(best, 0)
+}
+
+func singleTermMatchScore(query, text string, weight int) int {
 	best := 0
 	if text == query {
 		best = max(best, 100*weight)
@@ -1176,18 +1200,50 @@ func weightedMatchScore(query, text string, weight int) int {
 		if token == "" {
 			continue
 		}
-		switch {
-		case token == query:
-			best = max(best, 95*weight)
-		case strings.HasPrefix(token, query):
-			best = max(best, 75*weight-len(token))
-		case strings.Contains(token, query):
-			best = max(best, 60*weight-len(token))
-		case len(token) >= len(query) && len(fuzzy.Find(query, []string{token})) > 0:
-			best = max(best, 25*weight-len(token))
+		best = max(best, tokenMatchScore(query, token, weight))
+	}
+	return best
+}
+
+func tokenMatchScore(query, token string, weight int) int {
+	switch {
+	case token == query:
+		return 95 * weight
+	case strings.HasPrefix(token, query):
+		return 75*weight - len(token)
+	case strings.HasPrefix(query, token) && len(token) >= 3:
+		return 55*weight - len(query)
+	case sameLooseStem(query, token):
+		return 70 * weight
+	case strings.Contains(token, query):
+		return 60*weight - len(token)
+	case len(token) >= len(query) && len(fuzzy.Find(query, []string{token})) > 0:
+		return 25*weight - len(token)
+	}
+	return 0
+}
+
+func searchTerms(text string) []string {
+	terms := []string{}
+	for _, term := range strings.FieldsFunc(text, searchTokenSeparator) {
+		if term != "" {
+			terms = append(terms, term)
 		}
 	}
-	return max(best, 0)
+	return terms
+}
+
+func sameLooseStem(a, b string) bool {
+	return looseStem(a) == looseStem(b)
+}
+
+func looseStem(value string) string {
+	for _, suffix := range []string{"ing", "ed", "es", "s"} {
+		if len(value) > len(suffix)+2 && strings.HasSuffix(value, suffix) {
+			return strings.TrimSuffix(value, suffix)
+		}
+	}
+	return value
 }
 
 func indexPenalty(idx int) int {

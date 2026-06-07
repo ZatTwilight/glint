@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/ZatTwilight/glint/internal/agent"
@@ -32,6 +33,26 @@ func TestMoveWorkspaceSelectionSkipsAgents(t *testing.T) {
 	m.moveWorkspaceSelection(-1)
 	if got := m.visibleItems()[m.selected].Workspace.Name; got != "bravo" {
 		t.Fatalf("previous project selected %q, want bravo", got)
+	}
+}
+
+func TestPaletteSearchMatchesMultiWordWorkQueries(t *testing.T) {
+	m := New(State{Workspaces: []workspace.Workspace{{
+		Name: "glint",
+		Path: "/tmp/glint",
+		Agents: []agent.Agent{
+			{Name: "pi", Task: "Add dotfiles discovery to the workspace list"},
+			{Name: "pi", Task: "Fix command palette rendering"},
+		},
+	}}}, nil)
+
+	m.paletteQuery = "adding dotfiles"
+	targets := m.paletteTargets()
+	if len(targets) == 0 {
+		t.Fatal("palette returned no targets for multi-word query")
+	}
+	if got := targets[0].Title; !strings.Contains(got, "Add dotfiles") {
+		t.Fatalf("top palette target = %q, want dotfiles agent", got)
 	}
 }
 
