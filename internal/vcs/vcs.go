@@ -275,8 +275,11 @@ func (backend JJBackend) RemoveWorktree(repoPath, worktreePath string, force boo
 		return fmt.Errorf("forget workspace: %s", strings.TrimSpace(out.String()))
 	}
 	cleanPath := filepath.Clean(worktreePath)
-	if cleanPath == "." || cleanPath == string(filepath.Separator) || cleanPath == filepath.Clean(repoPath) {
+	if cleanPath == "." || cleanPath == string(filepath.Separator) {
 		return fmt.Errorf("refusing to remove unsafe workspace directory: %s", worktreePath)
+	}
+	if info, err := os.Stat(filepath.Join(cleanPath, ".jj")); err != nil || !info.IsDir() {
+		return fmt.Errorf("refusing to remove %s; no .jj directory found", worktreePath)
 	}
 	if err := os.RemoveAll(cleanPath); err != nil {
 		return fmt.Errorf("remove workspace directory: %w", err)
