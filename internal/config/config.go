@@ -54,11 +54,7 @@ func Load() (Config, error) {
 }
 
 func Default() Config {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return Config{WorkspaceRoots: []string{"."}, Theme: "auto", Spinner: "points"}
-	}
-	return Config{WorkspaceRoots: []string{filepath.Join(home, "Documents", "dev")}, Theme: "auto", Spinner: "points"}
+	return Config{WorkspaceRoots: []string{"."}, Theme: "auto", Spinner: "points"}
 }
 
 func Path() (string, error) {
