@@ -70,21 +70,19 @@ func newItemRenderer(t theme.Theme, collapsed map[string]bool, spinnerName strin
 		spinnerIndex: spinnerIndex(spinnerName),
 		styles: itemRendererStyles{
 			Title:       lipgloss.NewStyle().Foreground(t.Text).PaddingLeft(2),
-			Description: lipgloss.NewStyle().Foreground(t.Muted).PaddingLeft(2),
+			Description: lipgloss.NewStyle().Foreground(t.Muted).PaddingLeft(4),
 			SelectedTitle: lipgloss.NewStyle().
 				Foreground(t.Accent).
-				Border(lipgloss.NormalBorder(), false, false, false, true).
-				BorderForeground(t.Accent).
-				PaddingLeft(1),
+				Background(t.Selection).
+				PaddingLeft(2),
 			ActiveTitle: lipgloss.NewStyle().
 				Foreground(t.Text).
 				Bold(true).
 				PaddingLeft(2),
 			SelectedDesc: lipgloss.NewStyle().
 				Foreground(t.Muted).
-				Border(lipgloss.NormalBorder(), false, false, false, true).
-				BorderForeground(t.Accent).
-				PaddingLeft(1),
+				Background(t.Selection).
+				PaddingLeft(4),
 		},
 	}
 }
@@ -119,7 +117,7 @@ func (r itemRenderer) RenderVisible(item visibleItem, selected bool, width int, 
 		right := r.agentTimeStatus(ag)
 		line := util.RightAlignLine(left, right, rowWidth)
 		if selected {
-			return r.styles.SelectedTitle.Render(line)
+			return r.styles.SelectedTitle.Width(width).Render(line)
 		}
 		if ag.Window == currentWindow {
 			return r.styles.ActiveTitle.Render(line)
@@ -130,31 +128,48 @@ func (r itemRenderer) RenderVisible(item visibleItem, selected bool, width int, 
 }
 
 func (r itemRenderer) Render(i workspace.Workspace, selected bool, width int) string {
-	descWidth := width - r.styles.Description.GetHorizontalFrameSize()
+	titleStyle := r.styles.Title
+	descStyle := r.styles.Description
+	if selected {
+		titleStyle = r.styles.SelectedTitle
+		descStyle = r.styles.SelectedDesc
+	}
+	if selected {
+		titleStyle = titleStyle.Width(width)
+		descStyle = descStyle.Width(width)
+	}
+	titleWidth := width - titleStyle.GetHorizontalFrameSize()
 	titleTxt := workspaceTitle(i, len(i.Agents) > 0, r.collapsed[i.Path])
 	icon := ""
 	switch i.VCS {
 	case workspace.VCSJujutsu:
-		icon = "󱗆 "
+		icon = "󱗆"
 	case workspace.VCSGit:
-		icon = "󰊢 "
+		icon = "󰊢"
 	}
-	titleTxt = util.RightAlignLine(titleTxt, r.styles.Description.Render(icon+" "+relativeTime(workspaceActivityTime(i))), descWidth)
+	right := strings.TrimSpace(strings.Join([]string{icon, relativeTime(workspaceActivityTime(i))}, " "))
+	rightText := right
+	if !selected {
+		rightText = r.styles.Description.Render(right)
+	}
+	titleTxt = util.RightAlignLine(titleTxt, rightText, titleWidth)
 
 	pathParts := strings.Split(i.Path, "/")
 	shortPath := strings.Join(pathParts[len(pathParts)-2:], "/")
-	leftParts := []string{shortPath}
+	leftParts := []string{"└ " + shortPath}
+	if i.Branch != "" {
+		leftParts = append(leftParts, branchLabel(i))
+	}
 	if len(i.Agents) > 0 {
 		leftParts = append(leftParts, fmt.Sprintf("%d agent%s", len(i.Agents), plural(len(i.Agents))))
 	}
+	if i.Head != "" {
+		leftParts = append(leftParts, shortSha(i.Head))
+	}
 	descTxt := strings.Join(leftParts, " · ")
 
-	title := r.styles.Title.Render(titleTxt)
-	desc := r.styles.Description.Render(descTxt)
-	if selected {
-		title = r.styles.SelectedTitle.Render(titleTxt)
-		desc = r.styles.SelectedDesc.Render(descTxt)
-	}
+	title := titleStyle.Render(titleTxt)
+	desc := descStyle.Render(descTxt)
 
 	lines := []string{title, desc}
 
@@ -162,7 +177,7 @@ func (r itemRenderer) Render(i workspace.Workspace, selected bool, width int) st
 }
 
 func workspaceTitle(ws workspace.Workspace, hasAgents bool, collapsed bool) string {
-	marker := " "
+	marker := "•"
 	if hasAgents {
 		marker = "▾"
 		if collapsed {
@@ -173,6 +188,16 @@ func workspaceTitle(ws workspace.Workspace, hasAgents bool, collapsed bool) stri
 		return fmt.Sprintf("%s %s/%s", marker, ws.ParentName, ws.Name)
 	}
 	return fmt.Sprintf("%s %s", marker, ws.Name)
+}
+
+func branchLabel(ws workspace.Workspace) string {
+	branch := strings.TrimSpace(ws.Branch)
+	branch = strings.TrimPrefix(branch, "refs/heads/")
+	branch = strings.TrimPrefix(branch, "refs/remotes/")
+	if ws.VCS == workspace.VCSJujutsu {
+		return "󱗆 " + branch
+	}
+	return " " + branch
 }
 
 func workspaceActivityTime(ws workspace.Workspace) time.Time {
@@ -205,6 +230,14 @@ func (r itemRenderer) spinnerFrame() string {
 	}
 	frame := (time.Now().UnixNano() / selected.FPS.Nanoseconds()) % int64(len(selected.Frames))
 	return selected.Frames[frame]
+}
+
+func shortSha(sha string) string {
+	sha = strings.TrimSpace(sha)
+	if len(sha) > 7 {
+		return sha[:7]
+	}
+	return sha
 }
 
 func quoteTask(task string) string {

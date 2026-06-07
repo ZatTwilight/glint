@@ -302,7 +302,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.viewport.SetWidth(max(20, msg.Width-4))
 		headerHeight := lipgloss.Height(m.viewHeader())
-		footerHeight := lipgloss.Height(m.viewHeader())
+		footerHeight := lipgloss.Height(m.viewFooter())
 		verticalMarginHeight := headerHeight + footerHeight
 		m.viewport.SetHeight(msg.Height - verticalMarginHeight)
 		m.renderContent()
@@ -1750,15 +1750,19 @@ func (m *Model) renderPaletteContent() {
 	targets := m.paletteTargets()
 	lines := []string{}
 	m.spans = make([]itemSpan, 0, len(targets))
+
+	prompt := "  › " + m.paletteQuery
+	if strings.TrimSpace(m.paletteQuery) == "" {
+		prompt = "  › " + m.styles.Muted.Render("type to filter")
+	}
+	lines = append(lines, prompt)
+
 	if len(targets) == 0 {
-		lines = append(lines, "No palette matches")
+		lines = append(lines, m.styles.Muted.Render("No palette matches"))
 	}
 	for idx, target := range targets {
 		start := len(lines)
-		lines = append(lines, strings.Split(m.renderPaletteTarget(target, idx == m.selected), "\n")...)
-		if idx != len(targets)-1 {
-			lines = append(lines, "")
-		}
+		lines = append(lines, m.renderPaletteTarget(target, idx == m.selected))
 		m.spans = append(m.spans, itemSpan{start: start, end: len(lines)})
 	}
 	lines = append(lines, "", "", "")
@@ -1766,12 +1770,58 @@ func (m *Model) renderPaletteContent() {
 }
 
 func (m Model) renderPaletteTarget(target paletteTarget, selected bool) string {
-	label := m.styles.Badge.Render(target.Label)
-	title := label + " " + target.Title
+	prefix := "  "
+	label := m.styles.Muted.Render(target.Label)
 	if selected {
-		return strings.Join([]string{m.renderer.styles.SelectedTitle.Render(title), m.renderer.styles.SelectedDesc.Render(target.Subtitle)}, "\n")
+		prefix = "› "
+		label = target.Label
 	}
-	return strings.Join([]string{m.renderer.styles.Title.Render(title), m.renderer.styles.Description.Render(target.Subtitle)}, "\n")
+	left := prefix + label + " " + target.Title
+	right := target.Subtitle
+	style := m.renderer.styles.Title
+	if selected {
+		style = m.renderer.styles.SelectedTitle
+	}
+	width := max(0, m.viewportInnerWidth()-style.GetHorizontalFrameSize()-1)
+	if selected {
+		line := compactPaletteLine(left, right, width)
+		return style.Render(line)
+	}
+	line := compactPaletteLine(left, m.styles.Muted.Render(right), width)
+	return style.Render(line)
+}
+
+func compactPaletteLine(left, right string, width int) string {
+	if width <= 0 {
+		return left
+	}
+	if strings.TrimSpace(right) == "" {
+		return truncateDisplay(left, width)
+	}
+	available := width - lipgloss.Width(left) - 3
+	if available < 12 {
+		return truncateDisplay(left, width)
+	}
+	right = truncateDisplay(right, available)
+	line := util.RightAlignLine(left, right, width)
+	return truncateDisplay(line, width)
+}
+
+func truncateDisplay(value string, width int) string {
+	if width <= 0 || lipgloss.Width(value) <= width {
+		return value
+	}
+	if width <= 1 {
+		return "…"
+	}
+	out := ""
+	for _, r := range value {
+		if lipgloss.Width(out+string(r))+1 > width {
+			break
+		}
+		out += string(r)
+	}
+	return out + "…"
 }
 
 func (m *Model) moveSelection(delta int) {
@@ -1908,21 +1958,36 @@ func (m *Model) ensureSelectedVisible() {
 }
 
 func (m Model) viewHeader() string {
-	badge := m.styles.Badge.Render("Glint")
-	header := fmt.Sprintf("%s  %d projects", badge, len(m.state.Workspaces))
+	badge := m.styles.Badge.Render("GLINT")
+	parts := []string{
+		fmt.Sprintf("%d projects", len(m.state.Workspaces)),
+		fmt.Sprintf("%d agents", m.agentCount()),
+	}
+	if m.state.Multiplexer.Kind != multiplexer.None {
+		parts = append(parts, string(m.state.Multiplexer.Kind))
+	}
+	header := fmt.Sprintf("%s  %s", badge, strings.Join(parts, " · "))
 	if m.searchActive {
-		header = fmt.Sprintf("%s  /%s", header, m.searchQuery)
+		header = fmt.Sprintf("%s  %s", header, m.styles.Muted.Render("/ "+m.searchQuery))
 	}
 	if m.paletteActive {
-		header = fmt.Sprintf("%s  > %s", header, m.paletteQuery)
+		header = fmt.Sprintf("%s  %s", header, m.styles.Muted.Render("> "+m.paletteQuery))
 	}
 	if m.worktreeFlow.Active {
-		header = fmt.Sprintf("%s  worktree", header)
+		header = fmt.Sprintf("%s  %s", header, m.styles.Muted.Render("worktree"))
 	}
 	if m.cleanupFlow.Active {
-		header = fmt.Sprintf("%s  cleanup", header)
+		header = fmt.Sprintf("%s  %s", header, m.styles.Muted.Render("cleanup"))
 	}
 	return m.styles.Header.Render(header)
+}
+
+func (m Model) agentCount() int {
+	count := 0
+	for _, ws := range m.state.Workspaces {
+		count += len(ws.Agents)
+	}
+	return count
 }
 
 func (m Model) viewFooter() string {
@@ -1944,7 +2009,7 @@ func (m Model) viewFooter() string {
 		help = "type to filter · ↑/↓ move · Enter select · y confirm · n/Esc cancel"
 
 	}
-	content := fmt.Sprintf("status: %s\n%s", m.status, help)
+	content := fmt.Sprintf("%s %s\n%s", m.styles.Badge.Render("status"), m.status, help)
 	return m.styles.Help.Render(content)
 }
 

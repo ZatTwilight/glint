@@ -16,6 +16,7 @@ type Theme struct {
 	Text       color.Color
 	Muted      color.Color
 	Subtle     color.Color
+	Selection  color.Color
 	Background color.Color
 	BadgeText  color.Color
 }
@@ -31,13 +32,13 @@ type Styles struct {
 func Resolve(name string) Theme {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "light":
-		return Theme{Name: "light", Dark: false, Accent: lipgloss.Color("#6C5CE7"), Text: lipgloss.Color("#1A1A1A"), Muted: lipgloss.Color("#6B7280"), Subtle: lipgloss.Color("#D1D5DB"), Background: lipgloss.Color("#FFFFFF"), BadgeText: lipgloss.Color("#FFFFFF")}
+		return Theme{Name: "light", Dark: false, Accent: lipgloss.Color("#6C5CE7"), Text: lipgloss.Color("#1A1A1A"), Muted: lipgloss.Color("#6B7280"), Subtle: lipgloss.Color("#D1D5DB"), Selection: lipgloss.Color("#F3F4F6"), Background: lipgloss.Color("#FFFFFF"), BadgeText: lipgloss.Color("#FFFFFF")}
 	case "dracula":
-		return Theme{Name: "dracula", Dark: true, Accent: lipgloss.Color("#BD93F9"), Text: lipgloss.Color("#F8F8F2"), Muted: lipgloss.Color("#6272A4"), Subtle: lipgloss.Color("#44475A"), Background: lipgloss.Color("#282A36"), BadgeText: lipgloss.Color("#282A36")}
+		return Theme{Name: "dracula", Dark: true, Accent: lipgloss.Color("#BD93F9"), Text: lipgloss.Color("#F8F8F2"), Muted: lipgloss.Color("#6272A4"), Subtle: lipgloss.Color("#44475A"), Selection: lipgloss.Color("#2D303E"), Background: lipgloss.Color("#282A36"), BadgeText: lipgloss.Color("#282A36")}
 	case "catppuccin", "mocha":
-		return Theme{Name: "catppuccin", Dark: true, Accent: lipgloss.Color("#CBA6F7"), Text: lipgloss.Color("#CDD6F4"), Muted: lipgloss.Color("#7F849C"), Subtle: lipgloss.Color("#45475A"), Background: lipgloss.Color("#1E1E2E"), BadgeText: lipgloss.Color("#1E1E2E")}
+		return Theme{Name: "catppuccin", Dark: true, Accent: lipgloss.Color("#CBA6F7"), Text: lipgloss.Color("#CDD6F4"), Muted: lipgloss.Color("#7F849C"), Subtle: lipgloss.Color("#45475A"), Selection: lipgloss.Color("#252536"), Background: lipgloss.Color("#1E1E2E"), BadgeText: lipgloss.Color("#1E1E2E")}
 	case "kanagawa", "wave":
-		return Theme{Name: "kanagawa", Dark: true, Accent: lipgloss.Color("#957FB8"), Text: lipgloss.Color("#DCD7BA"), Muted: lipgloss.Color("#727169"), Subtle: lipgloss.Color("#363646"), Background: lipgloss.Color("#1F1F28"), BadgeText: lipgloss.Color("#1F1F28")}
+		return Theme{Name: "kanagawa", Dark: true, Accent: lipgloss.Color("#938AA9"), Text: lipgloss.Color("#DCD7BA"), Muted: lipgloss.Color("#727169"), Subtle: lipgloss.Color("#2A2A37"), Selection: lipgloss.Color("#1A1A22"), Background: lipgloss.Color("#1F1F28"), BadgeText: lipgloss.Color("#1F1F28")}
 	case "dark":
 		return dark()
 	default:
@@ -50,11 +51,18 @@ func Resolve(name string) Theme {
 
 func NewStyles(t Theme) Styles {
 	return Styles{
-		Help:   lipgloss.NewStyle().Foreground(t.Muted).MarginTop(1).Padding(0, 1),
-		Header: lipgloss.NewStyle().MarginBottom(1).Padding(0, 1),
-		Muted:  lipgloss.NewStyle().Foreground(t.Muted),
-		Badge:  lipgloss.NewStyle().Foreground(t.BadgeText).Background(t.Accent).Padding(0, 1),
-		Body:   lipgloss.NewStyle().Padding(1, 0),
+		Help: lipgloss.NewStyle().
+			Foreground(t.Muted).
+			Border(lipgloss.NormalBorder(), true, false, false, false).
+			BorderForeground(t.Subtle).
+			Padding(0, 1),
+		Header: lipgloss.NewStyle().
+			Border(lipgloss.NormalBorder(), false, false, true, false).
+			BorderForeground(t.Subtle).
+			Padding(0, 1),
+		Muted: lipgloss.NewStyle().Foreground(t.Muted),
+		Badge: lipgloss.NewStyle().Foreground(t.BadgeText).Background(t.Accent).Bold(true).Padding(0, 1),
+		Body:  lipgloss.NewStyle().Padding(1, 0),
 	}
 }
 
@@ -73,7 +81,7 @@ func ApplyListTheme(delegate *list.DefaultDelegate, t Theme) {
 }
 
 func dark() Theme {
-	return Theme{Name: "dark", Dark: true, Accent: lipgloss.Color("#A78BFA"), Text: lipgloss.Color("#E5E7EB"), Muted: lipgloss.Color("#6B7280"), Subtle: lipgloss.Color("#374151"), Background: lipgloss.Color("#111827"), BadgeText: lipgloss.Color("#111827")}
+	return Theme{Name: "dark", Dark: true, Accent: lipgloss.Color("#A78BFA"), Text: lipgloss.Color("#E5E7EB"), Muted: lipgloss.Color("#6B7280"), Subtle: lipgloss.Color("#374151"), Selection: lipgloss.Color("#161E2B"), Background: lipgloss.Color("#111827"), BadgeText: lipgloss.Color("#111827")}
 }
 
 func inferLightTerminal() bool {
