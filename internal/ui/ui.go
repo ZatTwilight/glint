@@ -26,30 +26,65 @@ type State struct {
 	WorkspaceRoots []string
 	CurrentWindow  string
 	CurrentSession string
+	CurrentPath    string
 	SidebarMode    bool
 	Theme          theme.Theme
 	Spinner        string
+	Palette        PaletteOptions
+}
+
+type PaletteOptions struct {
+	IncludeWorkspaces       bool
+	IncludeAgents           bool
+	IncludeNewAgent         bool
+	IncludeShelveMain       bool
+	IncludeCreateWorktree   bool
+	IncludeCleanupWorktrees bool
+	LocalFirst              bool
+}
+
+func DefaultPaletteOptions() PaletteOptions {
+	return PaletteOptions{
+		IncludeWorkspaces:       true,
+		IncludeAgents:           true,
+		IncludeNewAgent:         true,
+		IncludeShelveMain:       true,
+		IncludeCreateWorktree:   true,
+		IncludeCleanupWorktrees: true,
+	}
+}
+
+func MovementPaletteOptions() PaletteOptions {
+	return PaletteOptions{
+		IncludeWorkspaces:       true,
+		IncludeCreateWorktree:   true,
+		IncludeCleanupWorktrees: true,
+		LocalFirst:              true,
+	}
 }
 
 type RefreshFunc func() (State, error)
 
 type Model struct {
-	state             State
-	viewport          viewport.Model
-	selected          int
-	status            string
-	refresh           RefreshFunc
-	styles            theme.Styles
-	renderer          itemRenderer
-	spans             []itemSpan
-	searchActive      bool
-	searchQuery       string
-	paletteActive     bool
-	paletteStandalone bool
-	paletteQuery      string
-	worktreeFlow      worktreeFlow
-	cleanupFlow       cleanupFlow
-	agentOffsets      map[string]int
+	state                 State
+	viewport              viewport.Model
+	selected              int
+	status                string
+	refresh               RefreshFunc
+	styles                theme.Styles
+	renderer              itemRenderer
+	spans                 []itemSpan
+	searchActive          bool
+	searchQuery           string
+	paletteActive         bool
+	paletteStandalone     bool
+	paletteFiltering      bool
+	paletteQuery          string
+	localPaletteCachePath string
+	localPaletteCache     []paletteTarget
+	worktreeFlow          worktreeFlow
+	cleanupFlow           cleanupFlow
+	agentOffsets          map[string]int
 }
 
 type itemKind int
@@ -97,6 +132,7 @@ const (
 type paletteAction struct {
 	Kind      paletteActionKind
 	Workspace workspace.Workspace
+	Source    vcs.Source
 }
 
 type worktreeFlowStep int
@@ -134,6 +170,7 @@ type cleanupFlow struct {
 	Query         string
 	Selected      int
 	Confirm       bool
+	DirtyConfirm  bool
 }
 
 func New(state State, refresh RefreshFunc) Model {
@@ -283,7 +320,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = "Enter switches or creates sessions"
 		}
 		idx := m.selected
+		paletteOptions := m.state.Palette
 		m.state = msg.state
+		m.state.Palette = paletteOptions
 		m.rebuildItems()
 		if m.searchActive {
 			m.updateSearchStatus()
@@ -317,10 +356,10 @@ func (m Model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "enter":
 		return m.activateSelected()
-	case "up":
+	case "up", "k":
 		m.moveSelection(-1)
 		return m, nil
-	case "down":
+	case "down", "j":
 		m.moveSelection(1)
 		return m, nil
 	case "home":
@@ -396,10 +435,18 @@ func (m Model) updatePalette(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return model, tea.Batch(cmd, tea.Quit)
 		}
 		return model, cmd
-	case "up":
+	case "tab", "h", "l":
+		m.state.Palette.LocalFirst = !m.state.Palette.LocalFirst
+		m.selected = 0
+		m.updatePaletteStatus()
+		m.renderContent()
+		return m, nil
+	case "ctrl+d", "ctrl+x":
+		return m.cleanupPaletteSelectedWorkspace()
+	case "up", "k":
 		m.movePaletteSelection(-1)
 		return m, nil
-	case "down":
+	case "down", "j":
 		m.movePaletteSelection(1)
 		return m, nil
 	case "home":
@@ -412,7 +459,14 @@ func (m Model) updatePalette(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.renderContent()
 		m.ensureSelectedVisible()
 		return m, nil
+	case "/":
+		m.paletteFiltering = true
+		m.updatePaletteStatus()
+		return m, nil
 	case "backspace", "ctrl+h":
+		if !m.paletteFiltering {
+			return m, nil
+		}
 		m.paletteQuery = dropLastRune(m.paletteQuery)
 		m.selected = 0
 		m.updatePaletteStatus()
@@ -420,6 +474,7 @@ func (m Model) updatePalette(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.ensureSelectedVisible()
 		return m, nil
 	case "ctrl+u":
+		m.paletteFiltering = true
 		m.paletteQuery = ""
 		m.selected = 0
 		m.updatePaletteStatus()
@@ -427,6 +482,9 @@ func (m Model) updatePalette(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.ensureSelectedVisible()
 		return m, nil
 	case "space":
+		if !m.paletteFiltering {
+			return m, nil
+		}
 		m.paletteQuery += " "
 		m.selected = 0
 		m.updatePaletteStatus()
@@ -435,7 +493,7 @@ func (m Model) updatePalette(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	if printableKey(msg.String()) {
+	if printableKey(msg.String()) && m.paletteFiltering {
 		m.paletteQuery += msg.String()
 		m.selected = 0
 		m.updatePaletteStatus()
@@ -447,11 +505,19 @@ func (m Model) updatePalette(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m *Model) updatePaletteStatus() {
 	count := len(m.paletteTargets())
+	mode := "global"
+	if m.state.Palette.LocalFirst {
+		mode = "local"
+	}
 	if strings.TrimSpace(m.paletteQuery) == "" {
-		m.status = fmt.Sprintf("Command palette · %d target%s", count, plural(count))
+		filterHint := "press / to filter"
+		if m.paletteFiltering {
+			filterHint = "filtering"
+		}
+		m.status = fmt.Sprintf("Command palette (%s) · %d target%s · %s", mode, count, plural(count), filterHint)
 		return
 	}
-	m.status = fmt.Sprintf("Palette: %s · %d match%s", m.paletteQuery, count, plural(count))
+	m.status = fmt.Sprintf("Palette (%s): %s · %d match%s", mode, m.paletteQuery, count, plural(count))
 }
 
 func printableKey(key string) bool {
@@ -510,6 +576,21 @@ func (m Model) startCleanupFlow(ws workspace.Workspace) (tea.Model, tea.Cmd) {
 	m.renderContent()
 	m.ensureSelectedVisible()
 	return m, nil
+}
+
+func (m Model) startWorktreeFlowFromSource(ws workspace.Workspace, source vcs.Source) (tea.Model, tea.Cmd) {
+	model, cmd := m.startWorktreeFlow(ws)
+	m2, ok := model.(Model)
+	if !ok {
+		return model, cmd
+	}
+	m2.worktreeFlow.Source = source
+	m2.worktreeFlow.Step = worktreeStepName
+	m2.worktreeFlow.Query = vcs.SuggestedWorktreeName(source.Name)
+	m2.worktreeFlow.Pristine = true
+	m2.status = "Worktree name"
+	m2.renderContent()
+	return m2, cmd
 }
 
 func (m Model) startWorktreeFlow(ws workspace.Workspace) (tea.Model, tea.Cmd) {
@@ -605,10 +686,10 @@ func (m Model) updateCleanupFlow(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.status = "Enter switches or creates sessions"
 		m.renderContent()
 		return m, nil
-	case "up":
+	case "up", "k":
 		m.moveCleanupSelection(-1)
 		return m, nil
-	case "down":
+	case "down", "j":
 		m.moveCleanupSelection(1)
 		return m, nil
 	case "backspace", "ctrl+h":
@@ -628,7 +709,10 @@ func (m Model) updateCleanupFlow(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "y":
 		if m.cleanupFlow.Confirm {
-			return m.removeCleanupWorktree()
+			if !m.cleanupFlow.DirtyConfirm {
+				return m.confirmCleanupWorktree()
+			}
+			return m.removeCleanupWorktree(true)
 		}
 		m.cleanupFlow.Query += "y"
 		m.cleanupFlow.Selected = 0
@@ -715,7 +799,27 @@ func (m Model) filteredCleanupWorktrees() []vcs.WorkspaceRef {
 	return worktrees
 }
 
-func (m Model) removeCleanupWorktree() (tea.Model, tea.Cmd) {
+func (m Model) confirmCleanupWorktree() (tea.Model, tea.Cmd) {
+	if len(m.cleanupFlow.WorkspaceRefs) == 0 {
+		m.status = "Pick a worktree"
+		return m, nil
+	}
+	wt := m.cleanupFlow.WorkspaceRefs[0]
+	dirty, err := vcs.WorkspaceHasLocalChanges(m.cleanupFlow.Backend, wt.Path)
+	if err != nil {
+		m.status = fmt.Sprintf("Could not check changes: %v", err)
+		return m, nil
+	}
+	if dirty {
+		m.cleanupFlow.DirtyConfirm = true
+		m.status = "Workspace has local changes. Press y again to remove anyway · n/Esc cancel"
+		m.renderContent()
+		return m, nil
+	}
+	return m.removeCleanupWorktree(false)
+}
+
+func (m Model) removeCleanupWorktree(force bool) (tea.Model, tea.Cmd) {
 	if len(m.cleanupFlow.WorkspaceRefs) == 0 {
 		m.status = "Pick a worktree"
 		return m, nil
@@ -742,7 +846,7 @@ func (m Model) removeCleanupWorktree() (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	}
-	if err := m.cleanupFlow.Backend.RemoveWorkspace(m.cleanupFlow.Workspace.Path, wt.Path, false); err != nil {
+	if err := m.cleanupFlow.Backend.RemoveWorkspace(m.cleanupFlow.Workspace.Path, wt.Path, force); err != nil {
 		m.status = fmt.Sprintf("Remove failed: %v", err)
 		return m, nil
 	}
@@ -761,10 +865,10 @@ func (m Model) updateWorktreeFlow(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.status = "Enter switches or creates sessions"
 		m.renderContent()
 		return m, nil
-	case "up":
+	case "up", "k":
 		m.moveWorktreeFlowSelection(-1)
 		return m, nil
-	case "down":
+	case "down", "j":
 		m.moveWorktreeFlowSelection(1)
 		return m, nil
 	case "backspace", "ctrl+h":
@@ -1055,9 +1159,16 @@ func (m Model) visibleItems() []visibleItem {
 
 func (m Model) paletteTargets() []paletteTarget {
 	query := strings.TrimSpace(m.paletteQuery)
+	options := m.state.Palette
+	if options == (PaletteOptions{}) {
+		options = DefaultPaletteOptions()
+	}
 	targets := []paletteTarget{}
+	if options.LocalFirst {
+		return m.localPaletteTargets(query, options)
+	}
 	seenRepoActions := map[string]bool{}
-	if m.state.SidebarMode {
+	if m.state.SidebarMode && options.IncludeShelveMain {
 		target := paletteTarget{
 			Action:   paletteAction{Kind: paletteActionShelveMain},
 			Label:    "action",
@@ -1076,16 +1187,18 @@ func (m Model) paletteTargets() []paletteTarget {
 		}
 		subtitle := paletteWorkspaceSubtitle(ws)
 		label := paletteWorkspaceLabel(ws)
-		target := paletteTarget{
-			Item:     visibleItem{Kind: kindWorkspace, Workspace: ws, AgentIndex: -1},
-			Label:    label,
-			Title:    ws.Name,
-			Subtitle: subtitle,
-			Search:   strings.Join([]string{label, "workspace", "repo", "worktree", ws.Name, subtitle, workspaceSearchText(ws)}, " "),
-		}
-		if score, ok := paletteTargetScore(query, target); ok {
-			target.Score = score + 25
-			targets = append(targets, target)
+		if options.IncludeWorkspaces {
+			target := paletteTarget{
+				Item:     visibleItem{Kind: kindWorkspace, Workspace: ws, AgentIndex: -1},
+				Label:    label,
+				Title:    ws.Name,
+				Subtitle: subtitle,
+				Search:   strings.Join([]string{label, "workspace", "repo", "worktree", ws.Name, subtitle, workspaceSearchText(ws)}, " "),
+			}
+			if score, ok := paletteTargetScore(query, target); ok {
+				target.Score = score + 25
+				targets = append(targets, target)
+			}
 		}
 		if ws.VCS != workspace.VCSNone {
 			repoKey := paletteRepoActionKey(ws)
@@ -1093,31 +1206,35 @@ func (m Model) paletteTargets() []paletteTarget {
 				seenRepoActions[repoKey] = true
 				unit := vcsUnitForWorkspace(ws)
 				repoName := paletteRepoActionName(ws)
-				createWorktreeTarget := paletteTarget{
-					Action:   paletteAction{Kind: paletteActionCreateWorktree, Workspace: ws},
-					Label:    "action",
-					Title:    "Create " + unit + " in " + repoName,
-					Subtitle: ws.Root,
-					Search:   strings.Join([]string{"action create new worktree workspace", repoName, ws.Name, ws.Path, ws.Root, ws.ParentName, ws.Branch}, " "),
+				if options.IncludeCreateWorktree {
+					createWorktreeTarget := paletteTarget{
+						Action:   paletteAction{Kind: paletteActionCreateWorktree, Workspace: ws},
+						Label:    "action",
+						Title:    "Create " + unit + " in " + repoName,
+						Subtitle: ws.Root,
+						Search:   strings.Join([]string{"action create new worktree workspace", repoName, ws.Name, ws.Path, ws.Root, ws.ParentName, ws.Branch}, " "),
+					}
+					if score, ok := paletteTargetScore(query, createWorktreeTarget); ok {
+						createWorktreeTarget.Score = score + 15
+						targets = append(targets, createWorktreeTarget)
+					}
 				}
-				if score, ok := paletteTargetScore(query, createWorktreeTarget); ok {
-					createWorktreeTarget.Score = score + 15
-					targets = append(targets, createWorktreeTarget)
-				}
-				cleanupTarget := paletteTarget{
-					Action:   paletteAction{Kind: paletteActionCleanupWorktrees, Workspace: ws},
-					Label:    "action",
-					Title:    "Clean up " + unit + "s in " + repoName,
-					Subtitle: vcsCleanupVerbForWorkspace(ws) + " a selected " + unit,
-					Search:   strings.Join([]string{"action cleanup clean remove delete prune worktree workspace", repoName, ws.Name, ws.Path, ws.Root, ws.ParentName, ws.Branch}, " "),
-				}
-				if score, ok := paletteTargetScore(query, cleanupTarget); ok {
-					cleanupTarget.Score = score + 15
-					targets = append(targets, cleanupTarget)
+				if options.IncludeCleanupWorktrees {
+					cleanupTarget := paletteTarget{
+						Action:   paletteAction{Kind: paletteActionCleanupWorktrees, Workspace: ws},
+						Label:    "action",
+						Title:    "Clean up " + unit + "s in " + repoName,
+						Subtitle: vcsCleanupVerbForWorkspace(ws) + " a selected " + unit,
+						Search:   strings.Join([]string{"action cleanup clean remove delete prune worktree workspace", repoName, ws.Name, ws.Path, ws.Root, ws.ParentName, ws.Branch}, " "),
+					}
+					if score, ok := paletteTargetScore(query, cleanupTarget); ok {
+						cleanupTarget.Score = score + 15
+						targets = append(targets, cleanupTarget)
+					}
 				}
 			}
 		}
-		if m.state.SidebarMode {
+		if m.state.SidebarMode && options.IncludeNewAgent {
 			actionTarget := paletteTarget{
 				Action:   paletteAction{Kind: paletteActionNewAgent, Workspace: ws},
 				Label:    "action",
@@ -1129,6 +1246,9 @@ func (m Model) paletteTargets() []paletteTarget {
 				actionTarget.Score = score + 15
 				targets = append(targets, actionTarget)
 			}
+		}
+		if !options.IncludeAgents {
+			continue
 		}
 		for idx, ag := range ws.Agents {
 			title := quoteTask(ag.Task)
@@ -1158,6 +1278,95 @@ func (m Model) paletteTargets() []paletteTarget {
 		})
 	}
 	return targets
+}
+
+var localPaletteBaseCache = map[string][]paletteTarget{}
+
+func (m Model) localPaletteTargets(query string, options PaletteOptions) []paletteTarget {
+	base := m.localPaletteBaseTargets(options)
+	targets := []paletteTarget{}
+	for _, target := range base {
+		if score, ok := paletteTargetScore(query, target); ok {
+			target.Score += score
+			targets = append(targets, target)
+		}
+	}
+	if query != "" {
+		sort.SliceStable(targets, func(i, j int) bool { return targets[i].Score > targets[j].Score })
+	}
+	return targets
+}
+
+func (m Model) localPaletteBaseTargets(options PaletteOptions) []paletteTarget {
+	ws, ok := m.currentWorkspace()
+	if !ok || ws.VCS == workspace.VCSNone {
+		return nil
+	}
+	cacheKey := strings.Join([]string{filepath.Clean(ws.Path), fmt.Sprintf("%t", options.IncludeWorkspaces), fmt.Sprintf("%t", options.IncludeCreateWorktree), fmt.Sprintf("%t", options.IncludeCleanupWorktrees)}, "\x00")
+	if targets, ok := localPaletteBaseCache[cacheKey]; ok {
+		return targets
+	}
+	backend := vcs.ForPath(ws.Path)
+	sources, err := backend.Sources(ws.Path)
+	if err != nil {
+		return nil
+	}
+	refs, _ := backend.WorkspaceRefs(ws.Path)
+	targets := []paletteTarget{}
+	if options.IncludeWorkspaces {
+		for _, ref := range refs {
+			if ref.Path == "" || ref.Bare {
+				continue
+			}
+			existing, ok := m.workspaceByPath(ref.Path)
+			if !ok {
+				existing = workspace.Workspace{Name: filepath.Base(ref.Path), Path: ref.Path, VCS: ws.VCS}
+			}
+			title := existing.Name
+			if ref.Source != "" {
+				title = ref.Source
+			}
+			targets = append(targets, paletteTarget{Item: visibleItem{Kind: kindWorkspace, Workspace: existing, AgentIndex: -1}, Label: "switch", Title: title, Subtitle: ref.Path, Search: strings.Join([]string{"switch checkout workspace worktree", title, ref.Source, existing.Name, ref.Path}, " "), Score: 30})
+		}
+	}
+	for _, source := range sources {
+		if options.IncludeCreateWorktree {
+			targets = append(targets, paletteTarget{Action: paletteAction{Kind: paletteActionCreateWorktree, Workspace: ws, Source: source}, Label: "create", Title: source.Name, Subtitle: source.Ref + remoteSuffix(source), Search: strings.Join([]string{"create checkout workspace worktree branch bookmark", source.Name, source.Ref}, " "), Score: 20})
+		}
+	}
+	localPaletteBaseCache[cacheKey] = targets
+	return targets
+}
+
+func remoteSuffix(source vcs.Source) string {
+	if source.Remote {
+		return " [remote]"
+	}
+	return ""
+}
+
+func (m Model) currentWorkspace() (workspace.Workspace, bool) {
+	current := filepath.Clean(m.state.CurrentPath)
+	var best workspace.Workspace
+	bestLen := -1
+	for _, ws := range m.state.Workspaces {
+		path := filepath.Clean(ws.Path)
+		if (current == path || strings.HasPrefix(current, path+string(filepath.Separator))) && len(path) > bestLen {
+			best = ws
+			bestLen = len(path)
+		}
+	}
+	return best, bestLen >= 0
+}
+
+func (m Model) workspaceByPath(path string) (workspace.Workspace, bool) {
+	clean := filepath.Clean(path)
+	for _, ws := range m.state.Workspaces {
+		if filepath.Clean(ws.Path) == clean {
+			return ws, true
+		}
+	}
+	return workspace.Workspace{}, false
 }
 
 func targetKindRank(target paletteTarget) int {
@@ -1726,7 +1935,7 @@ func (m Model) viewFooter() string {
 		help = "type to filter · ↑/↓ move · Enter select · ctrl+u clear · Esc close search"
 	}
 	if m.paletteActive {
-		help = "type command · ↑/↓ move · Enter run/open · ctrl+u clear · Esc close palette"
+		help = "↑/↓/j/k move · Enter run/open · ctrl+d cleanup workspace · / filter · Tab/h/l local/global · Esc close palette"
 	}
 	if m.worktreeFlow.Active {
 		help = "type to filter/edit · ↑/↓ move branches · Enter next/create · y/n choose · Esc cancel"
@@ -1769,6 +1978,25 @@ func (m Model) activatePaletteSelected() (tea.Model, tea.Cmd) {
 	return m.activateItem(target.Item)
 }
 
+func (m Model) cleanupPaletteSelectedWorkspace() (tea.Model, tea.Cmd) {
+	targets := m.paletteTargets()
+	if len(targets) == 0 || m.selected < 0 || m.selected >= len(targets) || targets[m.selected].Item.Kind != kindWorkspace {
+		m.status = "Pick a workspace to clean up"
+		return m, nil
+	}
+	selected := targets[m.selected].Item.Workspace
+	repo, ok := m.currentWorkspace()
+	if !ok || !m.state.Palette.LocalFirst {
+		repo = selected
+	}
+	backend := vcs.ForPath(repo.Path)
+	m.cleanupFlow = cleanupFlow{Active: true, Backend: backend, Workspace: repo, WorkspaceRefs: []vcs.WorkspaceRef{{Path: selected.Path}}, Confirm: true}
+	m.paletteActive = false
+	m.status = "Confirm remove workspace? y/n"
+	m.renderContent()
+	return m, nil
+}
+
 func (m Model) activatePaletteAction(action paletteAction) (tea.Model, tea.Cmd) {
 	switch action.Kind {
 	case paletteActionNewAgent:
@@ -1776,6 +2004,9 @@ func (m Model) activatePaletteAction(action paletteAction) (tea.Model, tea.Cmd) 
 	case paletteActionShelveMain:
 		return m.shelveMainPane()
 	case paletteActionCreateWorktree:
+		if action.Source.Name != "" || action.Source.Ref != "" {
+			return m.startWorktreeFlowFromSource(action.Workspace, action.Source)
+		}
 		return m.startWorktreeFlow(action.Workspace)
 	case paletteActionCleanupWorktrees:
 		return m.startCleanupFlow(action.Workspace)

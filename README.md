@@ -132,3 +132,4 @@ Hook status is merged with tmux pane detection and wins over activity-based gues
 - Launch configured agent commands like Claude, Codex, OpenCode, Pi
 - Add config file for agent commands and launchers
 - Add zellij adapter
+

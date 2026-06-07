@@ -36,10 +36,10 @@ func main() {
 			runApp(true)
 			return
 		case "palette":
-			runPalette()
+			runPalette(args[1:])
 			return
 		case "popup":
-			if err := runPopup(); err != nil {
+			if err := runPopup(args[1:]); err != nil {
 				fmt.Fprintf(os.Stderr, "glint popup: %v\n", err)
 				os.Exit(1)
 			}
@@ -95,7 +95,7 @@ func runAttach() error {
 	return exec.Command("tmux", "split-window", "-h", "-b", "-l", "36", cmd).Run()
 }
 
-func runPopup() error {
+func runPopup(args []string) error {
 	if os.Getenv("TMUX") == "" {
 		return fmt.Errorf("popup requires tmux")
 	}
@@ -104,7 +104,15 @@ func runPopup() error {
 		bin = os.Args[0]
 	}
 	cmd := shellQuote(bin) + " palette"
-	return exec.Command("tmux", "display-popup", "-E", "-w", "80%", "-h", "60%", cmd).Run()
+	for _, arg := range args {
+		cmd += " " + shellQuote(arg)
+	}
+	popupArgs := []string{"display-popup", "-E", "-w", "80%", "-h", "60%"}
+	if out, err := exec.Command("tmux", "display-message", "-p", "#{pane_current_path}").Output(); err == nil && strings.TrimSpace(string(out)) != "" {
+		popupArgs = append(popupArgs, "-d", strings.TrimSpace(string(out)))
+	}
+	popupArgs = append(popupArgs, cmd)
+	return exec.Command("tmux", popupArgs...).Run()
 }
 
 func shellQuote(value string) string {
@@ -129,10 +137,49 @@ func runApp(sidebarMode bool) {
 	runProgram(model)
 }
 
-func runPalette() {
+func runPalette(args []string) {
+	paletteOptions, err := parsePaletteOptions(args)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "glint palette: %v\n", err)
+		os.Exit(1)
+	}
 	state, refresh := appState(false)
+	state.Palette = paletteOptions
 	model := ui.NewPalette(state, refresh)
 	runProgram(model)
+}
+
+func parsePaletteOptions(args []string) (ui.PaletteOptions, error) {
+	options := ui.DefaultPaletteOptions()
+	for _, arg := range args {
+		switch arg {
+		case "--movement", "--workspace", "--workspaces", "--movement-only":
+			options = ui.MovementPaletteOptions()
+		case "--local", "--local-first":
+			options.LocalFirst = true
+		case "--global":
+			options.LocalFirst = false
+		case "--no-agents":
+			options.IncludeAgents = false
+			options.IncludeNewAgent = false
+		case "--no-actions":
+			options.IncludeNewAgent = false
+			options.IncludeShelveMain = false
+			options.IncludeCreateWorktree = false
+			options.IncludeCleanupWorktrees = false
+		case "--no-workspaces":
+			options.IncludeWorkspaces = false
+		case "--no-create":
+			options.IncludeCreateWorktree = false
+		case "--no-cleanup":
+			options.IncludeCleanupWorktrees = false
+		case "--agents-only":
+			options = ui.PaletteOptions{IncludeAgents: true}
+		default:
+			return options, fmt.Errorf("unknown option %q", arg)
+		}
+	}
+	return options, nil
 }
 
 func appState(sidebarMode bool) (ui.State, ui.RefreshFunc) {
@@ -160,6 +207,7 @@ func appState(sidebarMode bool) (ui.State, ui.RefreshFunc) {
 		if err != nil {
 			return ui.State{}, err
 		}
+		currentPath, _ := os.Getwd()
 		if sidebarMode {
 			_ = multiplexer.CleanupShelfScratchPanes()
 		}
@@ -170,14 +218,17 @@ func appState(sidebarMode bool) (ui.State, ui.RefreshFunc) {
 			WorkspaceRoots: cfg.WorkspaceRoots,
 			CurrentWindow:  currentWindow,
 			CurrentSession: currentSession,
+			CurrentPath:    currentPath,
 			SidebarMode:    sidebarMode,
 			Theme:          appTheme,
 			Spinner:        spinnerName,
 		}, nil
 	}
 
+	currentPath, _ := os.Getwd()
 	return ui.State{
 		WorkspaceRoots: cfg.WorkspaceRoots,
+		CurrentPath:    currentPath,
 		SidebarMode:    sidebarMode,
 		Theme:          appTheme,
 		Spinner:        spinnerName,

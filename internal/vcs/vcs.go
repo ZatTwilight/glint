@@ -348,3 +348,32 @@ func SuggestedWorktreeParent(repoPath string) string {
 func SuggestedWorktreePath(repoPath, name string) string {
 	return GitBackend{}.SuggestedWorkspacePath(repoPath, name)
 }
+
+func WorkspaceHasLocalChanges(backend Backend, workspacePath string) (bool, error) {
+	switch backend.Kind() {
+	case Git:
+		cmd := exec.Command("git", "-C", workspacePath, "status", "--porcelain")
+		var out bytes.Buffer
+		cmd.Stdout = &out
+		cmd.Stderr = &out
+		if err := cmd.Run(); err != nil {
+			return false, fmt.Errorf("git status: %s", strings.TrimSpace(out.String()))
+		}
+		return strings.TrimSpace(out.String()) != "", nil
+	case Jujutsu:
+		cmd := exec.Command("jj", "-R", workspacePath, "--ignore-working-copy", "diff", "--quiet")
+		var out bytes.Buffer
+		cmd.Stdout = &out
+		cmd.Stderr = &out
+		err := cmd.Run()
+		if err == nil {
+			return false, nil
+		}
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			return true, nil
+		}
+		return false, fmt.Errorf("jj diff: %s", strings.TrimSpace(out.String()))
+	default:
+		return false, nil
+	}
+}
