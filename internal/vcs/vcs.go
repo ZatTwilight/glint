@@ -19,12 +19,12 @@ const (
 type Backend interface {
 	Kind() Kind
 	RepoRoot(path string) (string, error)
-	Branches(repoPath string) ([]Branch, error)
-	Worktrees(repoPath string) ([]Worktree, error)
-	CreateWorktree(req CreateWorktreeRequest) error
-	RemoveWorktree(repoPath, worktreePath string, force bool) error
-	SuggestedWorktreeParent(repoPath string) string
-	SuggestedWorktreePath(repoPath, name string) string
+	Sources(repoPath string) ([]Source, error)
+	WorkspaceRefs(repoPath string) ([]WorkspaceRef, error)
+	CreateWorkspace(req CreateWorkspaceRequest) error
+	RemoveWorkspace(repoPath, workspacePath string, force bool) error
+	SuggestedWorkspaceParent(repoPath string) string
+	SuggestedWorkspacePath(repoPath, name string) string
 }
 
 type GitBackend struct{}
@@ -40,24 +40,29 @@ func ForPath(path string) Backend {
 	return GitBackend{}
 }
 
-type Branch struct {
+type Source struct {
 	Name   string
 	Ref    string
 	Remote bool
 }
 
-type Worktree struct {
+type WorkspaceRef struct {
 	Path   string
-	Branch string
+	Source string
 	Bare   bool
 }
 
-type CreateWorktreeRequest struct {
+type CreateWorkspaceRequest struct {
 	RepoPath      string
-	WorktreePath  string
+	WorkspacePath string
 	BaseRef       string
-	NewBranchName string
+	NewSourceName string
 }
+
+// Backwards-compatible aliases while the rest of Glint migrates to neutral names.
+type Branch = Source
+type Worktree = WorkspaceRef
+type CreateWorktreeRequest = CreateWorkspaceRequest
 
 func (GitBackend) RepoRoot(path string) (string, error) {
 	cmd := exec.Command("git", "-C", path, "rev-parse", "--show-toplevel")
@@ -70,7 +75,7 @@ func (GitBackend) RepoRoot(path string) (string, error) {
 	return strings.TrimSpace(out.String()), nil
 }
 
-func (GitBackend) Branches(repoPath string) ([]Branch, error) {
+func (GitBackend) Sources(repoPath string) ([]Source, error) {
 	cmd := exec.Command("git", "-C", repoPath, "branch", "-a", "--format=%(refname):%(refname:short)")
 	var out bytes.Buffer
 	cmd.Stdout = &out
@@ -80,7 +85,7 @@ func (GitBackend) Branches(repoPath string) ([]Branch, error) {
 	}
 
 	seen := map[string]bool{}
-	branches := []Branch{}
+	branches := []Source{}
 	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -95,12 +100,12 @@ func (GitBackend) Branches(repoPath string) ([]Branch, error) {
 			continue
 		}
 		seen[ref] = true
-		branches = append(branches, Branch{Name: name, Ref: ref, Remote: strings.HasPrefix(ref, "refs/remotes/")})
+		branches = append(branches, Source{Name: name, Ref: ref, Remote: strings.HasPrefix(ref, "refs/remotes/")})
 	}
 	return branches, nil
 }
 
-func (GitBackend) Worktrees(repoPath string) ([]Worktree, error) {
+func (GitBackend) WorkspaceRefs(repoPath string) ([]WorkspaceRef, error) {
 	cmd := exec.Command("git", "-C", repoPath, "worktree", "list", "--porcelain")
 	var out bytes.Buffer
 	cmd.Stdout = &out
@@ -109,15 +114,15 @@ func (GitBackend) Worktrees(repoPath string) ([]Worktree, error) {
 		return nil, fmt.Errorf("list worktrees: %s", strings.TrimSpace(out.String()))
 	}
 
-	worktrees := []Worktree{}
-	cur := Worktree{}
+	worktrees := []WorkspaceRef{}
+	cur := WorkspaceRef{}
 	inWorktree := false
 	for _, line := range strings.Split(out.String(), "\n") {
 		if after, ok := strings.CutPrefix(line, "worktree "); ok {
 			if inWorktree && cur.Path != "" {
 				worktrees = append(worktrees, cur)
 			}
-			cur = Worktree{Path: after}
+			cur = WorkspaceRef{Path: after}
 			inWorktree = true
 			continue
 		}
@@ -125,7 +130,7 @@ func (GitBackend) Worktrees(repoPath string) ([]Worktree, error) {
 			continue
 		}
 		if after, ok := strings.CutPrefix(line, "branch "); ok {
-			cur.Branch = after
+			cur.Source = after
 		}
 		if line == "bare" {
 			cur.Bare = true
@@ -134,7 +139,7 @@ func (GitBackend) Worktrees(repoPath string) ([]Worktree, error) {
 			if cur.Path != "" {
 				worktrees = append(worktrees, cur)
 			}
-			cur = Worktree{}
+			cur = WorkspaceRef{}
 			inWorktree = false
 		}
 	}
@@ -144,12 +149,12 @@ func (GitBackend) Worktrees(repoPath string) ([]Worktree, error) {
 	return worktrees, nil
 }
 
-func (GitBackend) CreateWorktree(req CreateWorktreeRequest) error {
+func (GitBackend) CreateWorkspace(req CreateWorkspaceRequest) error {
 	args := []string{"-C", req.RepoPath, "worktree", "add"}
-	if strings.TrimSpace(req.NewBranchName) != "" {
-		args = append(args, "-b", strings.TrimSpace(req.NewBranchName))
+	if strings.TrimSpace(req.NewSourceName) != "" {
+		args = append(args, "-b", strings.TrimSpace(req.NewSourceName))
 	}
-	args = append(args, req.WorktreePath, req.BaseRef)
+	args = append(args, req.WorkspacePath, req.BaseRef)
 	cmd := exec.Command("git", args...)
 	var out bytes.Buffer
 	cmd.Stdout = &out
@@ -160,8 +165,8 @@ func (GitBackend) CreateWorktree(req CreateWorktreeRequest) error {
 	return nil
 }
 
-func (GitBackend) RemoveWorktree(repoPath, worktreePath string, force bool) error {
-	args := []string{"-C", repoPath, "worktree", "remove", worktreePath}
+func (GitBackend) RemoveWorkspace(repoPath, workspacePath string, force bool) error {
+	args := []string{"-C", repoPath, "worktree", "remove", workspacePath}
 	if force {
 		args = append(args, "--force")
 	}
@@ -186,8 +191,8 @@ func (JJBackend) RepoRoot(path string) (string, error) {
 	return strings.TrimSpace(out.String()), nil
 }
 
-func (JJBackend) Branches(repoPath string) ([]Branch, error) {
-	branches := []Branch{{Name: "@", Ref: "@"}}
+func (JJBackend) Sources(repoPath string) ([]Source, error) {
+	branches := []Source{{Name: "@", Ref: "@"}}
 	cmd := exec.Command("jj", "-R", repoPath, "--ignore-working-copy", "bookmark", "list", "-a", "-T", "name ++ \"\\t\" ++ name ++ \"\\n\"")
 	var out bytes.Buffer
 	cmd.Stdout = &out
@@ -207,12 +212,12 @@ func (JJBackend) Branches(repoPath string) ([]Branch, error) {
 			continue
 		}
 		seen[name] = true
-		branches = append(branches, Branch{Name: name, Ref: name})
+		branches = append(branches, Source{Name: name, Ref: name})
 	}
 	return branches, nil
 }
 
-func (JJBackend) Worktrees(repoPath string) ([]Worktree, error) {
+func (JJBackend) WorkspaceRefs(repoPath string) ([]WorkspaceRef, error) {
 	cmd := exec.Command("jj", "-R", repoPath, "--ignore-working-copy", "workspace", "list", "-T", "name ++ \"\\t\" ++ root ++ \"\\n\"")
 	var out bytes.Buffer
 	cmd.Stdout = &out
@@ -220,7 +225,7 @@ func (JJBackend) Worktrees(repoPath string) ([]Worktree, error) {
 	if err := cmd.Run(); err != nil {
 		return nil, fmt.Errorf("list workspaces: %s", strings.TrimSpace(out.String()))
 	}
-	worktrees := []Worktree{}
+	worktrees := []WorkspaceRef{}
 	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -230,18 +235,18 @@ func (JJBackend) Worktrees(repoPath string) ([]Worktree, error) {
 		if len(parts) != 2 {
 			continue
 		}
-		worktrees = append(worktrees, Worktree{Path: parts[1], Branch: parts[0]})
+		worktrees = append(worktrees, WorkspaceRef{Path: parts[1], Source: parts[0]})
 	}
 	return worktrees, nil
 }
 
-func (JJBackend) CreateWorktree(req CreateWorktreeRequest) error {
-	name := filepath.Base(req.WorktreePath)
+func (JJBackend) CreateWorkspace(req CreateWorkspaceRequest) error {
+	name := filepath.Base(req.WorkspacePath)
 	args := []string{"-R", req.RepoPath, "workspace", "add", "--name", name}
 	if strings.TrimSpace(req.BaseRef) != "" {
 		args = append(args, "-r", req.BaseRef)
 	}
-	args = append(args, req.WorktreePath)
+	args = append(args, req.WorkspacePath)
 	cmd := exec.Command("jj", args...)
 	var out bytes.Buffer
 	cmd.Stdout = &out
@@ -252,20 +257,20 @@ func (JJBackend) CreateWorktree(req CreateWorktreeRequest) error {
 	return nil
 }
 
-func (backend JJBackend) RemoveWorktree(repoPath, worktreePath string, force bool) error {
-	workspaces, err := backend.Worktrees(repoPath)
+func (backend JJBackend) RemoveWorkspace(repoPath, workspacePath string, force bool) error {
+	workspaces, err := backend.WorkspaceRefs(repoPath)
 	if err != nil {
 		return err
 	}
 	name := ""
 	for _, ws := range workspaces {
-		if filepath.Clean(ws.Path) == filepath.Clean(worktreePath) {
-			name = ws.Branch
+		if filepath.Clean(ws.Path) == filepath.Clean(workspacePath) {
+			name = ws.Source
 			break
 		}
 	}
 	if strings.TrimSpace(name) == "" {
-		return fmt.Errorf("workspace not found for %s", worktreePath)
+		return fmt.Errorf("workspace not found for %s", workspacePath)
 	}
 	cmd := exec.Command("jj", "-R", repoPath, "workspace", "forget", name)
 	var out bytes.Buffer
@@ -274,12 +279,12 @@ func (backend JJBackend) RemoveWorktree(repoPath, worktreePath string, force boo
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("forget workspace: %s", strings.TrimSpace(out.String()))
 	}
-	cleanPath := filepath.Clean(worktreePath)
+	cleanPath := filepath.Clean(workspacePath)
 	if cleanPath == "." || cleanPath == string(filepath.Separator) {
-		return fmt.Errorf("refusing to remove unsafe workspace directory: %s", worktreePath)
+		return fmt.Errorf("refusing to remove unsafe workspace directory: %s", workspacePath)
 	}
 	if info, err := os.Stat(filepath.Join(cleanPath, ".jj")); err != nil || !info.IsDir() {
-		return fmt.Errorf("refusing to remove %s; no .jj directory found", worktreePath)
+		return fmt.Errorf("refusing to remove %s; no .jj directory found", workspacePath)
 	}
 	if err := os.RemoveAll(cleanPath); err != nil {
 		return fmt.Errorf("remove workspace directory: %w", err)
@@ -287,7 +292,7 @@ func (backend JJBackend) RemoveWorktree(repoPath, worktreePath string, force boo
 	return nil
 }
 
-func (backend JJBackend) SuggestedWorktreeParent(repoPath string) string {
+func (backend JJBackend) SuggestedWorkspaceParent(repoPath string) string {
 	root, err := backend.RepoRoot(repoPath)
 	if err != nil || root == "" {
 		root = repoPath
@@ -295,11 +300,11 @@ func (backend JJBackend) SuggestedWorktreeParent(repoPath string) string {
 	return filepath.Dir(root)
 }
 
-func (backend JJBackend) SuggestedWorktreePath(repoPath, name string) string {
+func (backend JJBackend) SuggestedWorkspacePath(repoPath, name string) string {
 	if filepath.IsAbs(name) {
 		return name
 	}
-	return filepath.Join(backend.SuggestedWorktreeParent(repoPath), name)
+	return filepath.Join(backend.SuggestedWorkspaceParent(repoPath), name)
 }
 
 func SuggestedWorktreeName(branch string) string {
@@ -315,7 +320,7 @@ func SuggestedWorktreeName(branch string) string {
 	return branch
 }
 
-func (GitBackend) SuggestedWorktreeParent(repoPath string) string {
+func (GitBackend) SuggestedWorkspaceParent(repoPath string) string {
 	root, err := GitBackend{}.RepoRoot(repoPath)
 	if err != nil || root == "" {
 		root = repoPath
@@ -323,23 +328,23 @@ func (GitBackend) SuggestedWorktreeParent(repoPath string) string {
 	return filepath.Dir(root)
 }
 
-func (backend GitBackend) SuggestedWorktreePath(repoPath, name string) string {
+func (backend GitBackend) SuggestedWorkspacePath(repoPath, name string) string {
 	if filepath.IsAbs(name) {
 		return name
 	}
-	return filepath.Join(backend.SuggestedWorktreeParent(repoPath), name)
+	return filepath.Join(backend.SuggestedWorkspaceParent(repoPath), name)
 }
 
 func GitRepoRoot(path string) (string, error)           { return GitBackend{}.RepoRoot(path) }
-func GitBranches(repoPath string) ([]Branch, error)     { return GitBackend{}.Branches(repoPath) }
-func GitWorktrees(repoPath string) ([]Worktree, error)  { return GitBackend{}.Worktrees(repoPath) }
-func GitCreateWorktree(req CreateWorktreeRequest) error { return GitBackend{}.CreateWorktree(req) }
+func GitBranches(repoPath string) ([]Branch, error)     { return GitBackend{}.Sources(repoPath) }
+func GitWorktrees(repoPath string) ([]Worktree, error)  { return GitBackend{}.WorkspaceRefs(repoPath) }
+func GitCreateWorktree(req CreateWorktreeRequest) error { return GitBackend{}.CreateWorkspace(req) }
 func GitRemoveWorktree(repoPath, worktreePath string, force bool) error {
-	return GitBackend{}.RemoveWorktree(repoPath, worktreePath, force)
+	return GitBackend{}.RemoveWorkspace(repoPath, worktreePath, force)
 }
 func SuggestedWorktreeParent(repoPath string) string {
-	return GitBackend{}.SuggestedWorktreeParent(repoPath)
+	return GitBackend{}.SuggestedWorkspaceParent(repoPath)
 }
 func SuggestedWorktreePath(repoPath, name string) string {
-	return GitBackend{}.SuggestedWorktreePath(repoPath, name)
+	return GitBackend{}.SuggestedWorkspacePath(repoPath, name)
 }
