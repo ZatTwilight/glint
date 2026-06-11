@@ -72,6 +72,7 @@ type Model struct {
 	status                string
 	refresh               RefreshFunc
 	styles                theme.Styles
+	width                 int
 	renderer              itemRenderer
 	spans                 []itemSpan
 	searchActive          bool
@@ -300,11 +301,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	case tea.WindowSizeMsg:
-		m.viewport.SetWidth(max(20, msg.Width-4))
+		m.width = msg.Width
+		m.viewport.SetWidth(max(20, msg.Width))
 		headerHeight := lipgloss.Height(m.viewHeader())
 		footerHeight := lipgloss.Height(m.viewFooter())
 		verticalMarginHeight := headerHeight + footerHeight
-		m.viewport.SetHeight(msg.Height - verticalMarginHeight)
+		m.viewport.SetHeight(max(1, msg.Height-verticalMarginHeight))
 		m.renderContent()
 	case refreshTickMsg:
 		return m, tea.Batch(m.doRefresh(), refreshTick())
@@ -1982,7 +1984,11 @@ func (m Model) viewHeader() string {
 	if m.cleanupFlow.Active {
 		header = fmt.Sprintf("%s  %s", header, m.styles.Muted.Render("cleanup"))
 	}
-	return m.styles.Header.Render(header)
+	style := m.styles.Header
+	if m.width > 0 {
+		style = style.Width(max(0, m.width-style.GetHorizontalFrameSize()))
+	}
+	return style.Render(header)
 }
 
 func (m Model) agentCount() int {
@@ -2013,12 +2019,16 @@ func (m Model) viewFooter() string {
 
 	}
 	content := fmt.Sprintf("%s %s\n%s", m.styles.Badge.Render("status"), m.status, help)
-	return m.styles.Help.Render(content)
+	style := m.styles.Help
+	if m.width > 0 {
+		style = style.Width(max(0, m.width-style.GetHorizontalFrameSize()))
+	}
+	return style.Render(content)
 }
 
 func (m Model) View() tea.View {
 	body := m.viewport.View()
-	v := tea.NewView(m.viewHeader() + body + m.viewFooter())
+	v := tea.NewView(lipgloss.JoinVertical(lipgloss.Left, m.viewHeader(), body, m.viewFooter()))
 	v.AltScreen = true
 	v.MouseMode = tea.MouseModeCellMotion
 	return v
