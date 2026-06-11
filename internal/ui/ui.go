@@ -343,6 +343,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if printableKey(msg.String()) {
+		m.searchQuery += msg.String()
+		m.selected = 0
+		m.updateSearchStatus()
+		m.renderContent()
+		m.ensureSelectedVisible()
+		return m, nil
+	}
+
 	switch msg.String() {
 	case "ctrl+c":
 		return m, tea.Quit
@@ -395,13 +404,6 @@ func (m Model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	if printableKey(msg.String()) {
-		m.searchQuery += msg.String()
-		m.selected = 0
-		m.updateSearchStatus()
-		m.renderContent()
-		m.ensureSelectedVisible()
-	}
 	return m, nil
 }
 
@@ -415,6 +417,15 @@ func (m *Model) updateSearchStatus() {
 }
 
 func (m Model) updatePalette(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.paletteFiltering && printableKey(msg.String()) {
+		m.paletteQuery += msg.String()
+		m.selected = 0
+		m.updatePaletteStatus()
+		m.renderContent()
+		m.ensureSelectedVisible()
+		return m, nil
+	}
+
 	switch msg.String() {
 	case "ctrl+c":
 		return m, tea.Quit
@@ -440,9 +451,6 @@ func (m Model) updatePalette(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return model, cmd
 	case "tab", "h", "l":
-		if m.paletteFiltering && (msg.String() == "h" || msg.String() == "l") {
-			break
-		}
 		m.state.Palette.LocalFirst = !m.state.Palette.LocalFirst
 		m.selected = 0
 		m.updatePaletteStatus()
@@ -451,15 +459,9 @@ func (m Model) updatePalette(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+d", "ctrl+x":
 		return m.cleanupPaletteSelectedWorkspace()
 	case "up", "k":
-		if m.paletteFiltering && msg.String() == "k" {
-			break
-		}
 		m.movePaletteSelection(-1)
 		return m, nil
 	case "down", "j":
-		if m.paletteFiltering && msg.String() == "j" {
-			break
-		}
 		m.movePaletteSelection(1)
 		return m, nil
 	case "home":
@@ -506,13 +508,6 @@ func (m Model) updatePalette(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	if printableKey(msg.String()) && m.paletteFiltering {
-		m.paletteQuery += msg.String()
-		m.selected = 0
-		m.updatePaletteStatus()
-		m.renderContent()
-		m.ensureSelectedVisible()
-	}
 	return m, nil
 }
 
@@ -691,6 +686,13 @@ func titleCase(s string) string {
 }
 
 func (m Model) updateCleanupFlow(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if !m.cleanupFlow.Confirm && printableKey(msg.String()) {
+		m.cleanupFlow.Query += msg.String()
+		m.cleanupFlow.Selected = 0
+		m.renderContent()
+		return m, nil
+	}
+
 	switch msg.String() {
 	case "ctrl+c":
 		return m, tea.Quit
@@ -758,11 +760,6 @@ func (m Model) updateCleanupFlow(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.status = "Confirm remove worktree? y/n"
 		m.renderContent()
 		return m, nil
-	}
-	if printableKey(msg.String()) {
-		m.cleanupFlow.Query += msg.String()
-		m.cleanupFlow.Selected = 0
-		m.renderContent()
 	}
 	return m, nil
 }
@@ -870,6 +867,12 @@ func (m Model) removeCleanupWorktree(force bool) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateWorktreeFlow(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.worktreeFlow.Step != worktreeStepConfirmBranch && printableKey(msg.String()) {
+		m.appendWorktreeFlowInput(msg.String())
+		m.renderContent()
+		return m, nil
+	}
+
 	switch msg.String() {
 	case "ctrl+c":
 		return m, tea.Quit
@@ -989,10 +992,6 @@ func (m Model) updateWorktreeFlow(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return m.createWorktreeFromFlow()
 		}
-	}
-	if printableKey(msg.String()) {
-		m.appendWorktreeFlowInput(msg.String())
-		m.renderContent()
 	}
 	return m, nil
 }
