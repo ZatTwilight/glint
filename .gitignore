@@ -1,2 +1,5 @@
 bin/
 .tmp/
+/glint
+pi-session-*.html
+session-ses_*.md

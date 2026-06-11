@@ -270,9 +270,28 @@ func tmuxPanesInTarget(target string) ([]PaneGeometry, error) {
 }
 
 func FindPaneRightOf(sidebarPaneID string) (string, error) {
-	panes, err := TmuxPanesInWindowOfPane(sidebarPaneID)
+	pane, err := findPaneBesideSidebar(sidebarPaneID, true)
 	if err != nil {
 		return "", err
+	}
+	return pane.ID, nil
+}
+
+func FindMainPaneBesideSidebar(sidebarPaneID string) (string, error) {
+	if pane, err := findPaneBesideSidebar(sidebarPaneID, true); err == nil {
+		return pane.ID, nil
+	}
+	pane, err := findPaneBesideSidebar(sidebarPaneID, false)
+	if err != nil {
+		return "", err
+	}
+	return pane.ID, nil
+}
+
+func findPaneBesideSidebar(sidebarPaneID string, right bool) (*PaneGeometry, error) {
+	panes, err := TmuxPanesInWindowOfPane(sidebarPaneID)
+	if err != nil {
+		return nil, err
 	}
 
 	var sidebar *PaneGeometry
@@ -283,7 +302,7 @@ func FindPaneRightOf(sidebarPaneID string) (string, error) {
 		}
 	}
 	if sidebar == nil {
-		return "", fmt.Errorf("sidebar pane %s not found in current window", sidebarPaneID)
+		return nil, fmt.Errorf("sidebar pane %s not found in current window", sidebarPaneID)
 	}
 
 	bestIdx := -1
@@ -291,14 +310,25 @@ func FindPaneRightOf(sidebarPaneID string) (string, error) {
 	bestDistance := 0
 	for i := range panes {
 		pane := panes[i]
-		if pane.ID == sidebar.ID || pane.Left < sidebar.Left+sidebar.Width {
+		if pane.ID == sidebar.ID {
 			continue
+		}
+		var distance int
+		if right {
+			if pane.Left < sidebar.Left+sidebar.Width {
+				continue
+			}
+			distance = pane.Left - (sidebar.Left + sidebar.Width)
+		} else {
+			if pane.Left+pane.Width > sidebar.Left {
+				continue
+			}
+			distance = sidebar.Left - (pane.Left + pane.Width)
 		}
 		overlap := verticalOverlap(*sidebar, pane)
 		if overlap <= 0 {
 			continue
 		}
-		distance := pane.Left - (sidebar.Left + sidebar.Width)
 		if bestIdx == -1 || distance < bestDistance || (distance == bestDistance && overlap > bestOverlap) {
 			bestIdx = i
 			bestDistance = distance
@@ -306,9 +336,13 @@ func FindPaneRightOf(sidebarPaneID string) (string, error) {
 		}
 	}
 	if bestIdx == -1 {
-		return "", fmt.Errorf("no pane found to the right of sidebar pane %s", sidebarPaneID)
+		side := "right"
+		if !right {
+			side = "left"
+		}
+		return nil, fmt.Errorf("no pane found to the %s of sidebar pane %s", side, sidebarPaneID)
 	}
-	return panes[bestIdx].ID, nil
+	return &panes[bestIdx], nil
 }
 
 func SidebarPaneLayout(sidebarPaneID string) (width int, before bool, err error) {
@@ -432,6 +466,91 @@ func BringPaneToSidebarMain(sourcePaneID string) error {
 		return err
 	}
 	return SwapPanes(sourcePaneID, mainPaneID)
+}
+
+func CurrentNativeAgentPaneName() (string, error) {
+	sidebarPaneID, err := CurrentPaneID()
+	if err != nil {
+		return "", err
+	}
+	windowID, err := PaneWindowID(sidebarPaneID)
+	if err != nil {
+		return "", err
+	}
+	return nativeAgentPaneName(windowID), nil
+}
+
+func EnsureNativeAgentPane(command string) (string, string, error) {
+	sidebarPaneID, err := CurrentPaneID()
+	if err != nil {
+		return "", "", err
+	}
+	paneName, err := CurrentNativeAgentPaneName()
+	if err != nil {
+		return "", "", err
+	}
+	if paneID := nativeAgentPaneInWindow(sidebarPaneID, paneName); paneID != "" {
+		return paneName, paneID, nil
+	}
+
+	// Do not respawn an arbitrary user pane. Create a dedicated viewer pane by
+	// splitting the main pane to the right of the sidebar, then mark only the new
+	// pane as Glint-managed.
+	targetPaneID, err := FindMainPaneBesideSidebar(sidebarPaneID)
+	if err != nil || strings.TrimSpace(targetPaneID) == "" {
+		targetPaneID = sidebarPaneID
+	}
+	out, err := outputTmux("split-window", "-d", "-h", "-t", targetPaneID, "-P", "-F", "#{pane_id}", command)
+	if err != nil {
+		return "", "", err
+	}
+	paneID := strings.TrimSpace(string(out))
+	if paneID == "" {
+		return "", "", fmt.Errorf("created native agent pane but tmux returned no pane ID")
+	}
+	if err := runTmux("set-option", "-p", "-t", paneID, "@glint_role", "pty-pane"); err != nil {
+		return "", "", err
+	}
+	if err := runTmux("set-option", "-p", "-t", paneID, "@glint_pty_pane_name", paneName); err != nil {
+		return "", "", err
+	}
+	return paneName, paneID, nil
+}
+
+func nativeAgentPaneInWindow(referencePaneID, paneName string) string {
+	windowID, err := PaneWindowID(referencePaneID)
+	if err != nil {
+		return ""
+	}
+	format := strings.Join([]string{"#{pane_id}", "#{@glint_role}", "#{@glint_pty_pane_name}", "#{pane_dead}"}, "\t")
+	out, err := exec.Command("tmux", "list-panes", "-t", windowID, "-F", format).Output()
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		fields := strings.Split(line, "\t")
+		if len(fields) >= 4 && fields[1] == "pty-pane" && fields[2] == paneName && fields[3] != "1" {
+			return fields[0]
+		}
+	}
+	return ""
+}
+
+func nativeAgentPaneName(windowID string) string {
+	name := strings.TrimSpace(windowID)
+	name = strings.TrimPrefix(name, "@")
+	if name == "" {
+		name = "main"
+	}
+	return "tmux-" + name + "-agent"
+}
+
+func PaneOption(paneID, option string) (string, error) {
+	out, err := exec.Command("tmux", "show-option", "-p", "-v", "-t", paneID, option).Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 func ShelveSidebarMain(originSession string) error {
@@ -809,7 +928,7 @@ func TmuxProgramsAll(identify func(...string) (string, bool), descendants func(s
 
 	format := strings.Join([]string{
 		"#{session_name}", "#{window_id}", "#{window_name}", "#{pane_id}", "#{pane_current_path}",
-		"#{pane_current_command}", "#{pane_pid}", "#{pane_title}", "#{pane_active}",
+		"#{pane_current_command}", "#{pane_pid}", "#{pane_title}", "#{pane_active}", "#{@glint_role}",
 	}, "\t")
 	out, err := exec.Command("tmux", "list-panes", "-a", "-F", format).Output()
 	if err != nil {
@@ -820,7 +939,10 @@ func TmuxProgramsAll(identify func(...string) (string, bool), descendants func(s
 	var panes []paneInfo
 	for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
 		fields := strings.Split(line, "\t")
-		if len(fields) < 9 {
+		if len(fields) < 10 {
+			continue
+		}
+		if role := strings.TrimSpace(fields[9]); role == "sidebar" || role == "pty-pane" {
 			continue
 		}
 		panes = append(panes, paneInfo{fields[0], fields[1], fields[3], fields[4], fields[5], fields[6], fields[7], fields[8]})

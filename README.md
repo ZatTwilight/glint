@@ -38,6 +38,12 @@ glint hook ...           # record an agent lifecycle event
 glint events [limit]     # print recent recorded hook events
 glint hooks install pi   # install the Pi extension that emits hook events
 glint hooks uninstall pi # remove the Pi extension
+glint pty start --id ID -- COMMAND ... # experimental native PTY session
+glint pty attach ID      # attach to an experimental native PTY session
+glint pty detach ID      # close attach clients without killing the PTY session
+glint pty pane --name main # run a remotely switchable attach pane
+glint pty switch --pane main ID # point that pane at a PTY session
+glint pty list           # list experimental native PTY sessions
 glint debug data         # dump scanned config/session/workspace data as JSON
 ```
 
@@ -62,6 +68,33 @@ Or manually split a pane:
 ```bash
 tmux split-window -h -l 36 'glint sidebar'
 ```
+
+## Experimental native PTY daemon
+
+Glint includes an MVP native PTY daemon for detachable terminal-native agent processes without a tmux shelf session. It is not wired into the main UI yet.
+
+```bash
+# start a detached PTY session; the daemon autostarts on first use
+glint pty start --id claude-demo --cwd "$PWD" -- claude
+
+# attach from any terminal/tmux/zellij pane
+glint pty attach claude-demo
+
+# or run a pane that can be controlled from another terminal
+# terminal A:
+glint pty pane --name main --session claude-demo
+# terminal B:
+glint pty switch --pane main other-agent
+
+# detach from the attach client without stopping the agent: Ctrl-]
+glint pty list
+glint pty detach claude-demo # close any current attach clients without killing it
+glint pty kill claude-demo
+```
+
+The daemon listens on `$GLINT_PTYD_SOCKET`, or `$XDG_RUNTIME_DIR/glint/ptyd.sock`, or `/tmp/glint-$UID/ptyd.sock`.
+
+In the tmux sidebar, `n` now starts the configured agent command in a native Glint PTY session and turns the pane to the right of the sidebar into a remotely switchable `glint pty pane`. When the agent process exits, that viewer pane execs back into your login shell and stops being Glint-managed.
 
 ## Configuration
 

@@ -10,10 +10,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/ZatTwilight/glint/internal/multiplexer"
+	"github.com/ZatTwilight/glint/internal/ptydaemon"
 )
 
 const stateDirName = "glint"
@@ -25,6 +27,7 @@ type HookRecord struct {
 	Status    Status          `json:"status"`
 	Workspace string          `json:"workspace"`
 	SessionID string          `json:"session_id,omitempty"`
+	PtyID     string          `json:"pty_id,omitempty"`
 	Task      string          `json:"task,omitempty"`
 	Message   string          `json:"message,omitempty"`
 	Pane      string          `json:"pane,omitempty"`
@@ -69,7 +72,10 @@ func RecordHook(agentName, event string, input HookInput) (HookRecord, error) {
 	}
 
 	pane := firstNonEmpty(input.Pane, stringFromPayload(payload, "pane", "pane_id"), input.Env["TMUX_PANE"])
-	sessionID := normalizeHookSessionID(firstNonEmpty(input.SessionID, stringFromPayload(payload, "session_id", "sessionId", "sessionID", "id", "session_file", "sessionFile"), pane))
+	ptyID := firstNonEmpty(input.Env["GLINT_PTY_SESSION"], stringFromPayload(payload, "pty_id", "ptyId", "ptyID", "glint_pty_session"))
+	// Keep the agent's own session ID as the canonical identity. GLINT_PTY_SESSION
+	// is transport metadata used to hydrate the row with native-PTY switching.
+	sessionID := normalizeHookSessionID(firstNonEmpty(input.SessionID, stringFromPayload(payload, "session_id", "sessionId", "sessionID", "id", "session_file", "sessionFile"), ptyID, pane))
 	task := firstNonEmpty(input.Task, promptFromPayload(payload), stringFromPayload(payload, "task", "title"))
 	message := stringFromPayload(payload, "message", "last_assistant_message", "lastAssistantMessage", "body")
 	status := input.Status
@@ -84,6 +90,7 @@ func RecordHook(agentName, event string, input HookInput) (HookRecord, error) {
 		Status:    status,
 		Workspace: workspace,
 		SessionID: sessionID,
+		PtyID:     ptyID,
 		Task:      strings.TrimSpace(task),
 		Message:   strings.TrimSpace(message),
 		Pane:      pane,
@@ -104,8 +111,15 @@ func ScanHookState(workspacePath string) []Agent {
 	}
 	workspacePath = filepath.Clean(workspacePath)
 	agents := make([]Agent, 0, len(records))
-	cutoff := time.Now().Add(-14 * 24 * time.Hour)
+	cutoffDays := 14
+	if v := strings.TrimSpace(os.Getenv("GLINT_HOOK_CUTOFF_DAYS")); v != "" {
+		if d, err := strconv.Atoi(v); err == nil && d >= 0 {
+			cutoffDays = d
+		}
+	}
+	cutoff := time.Now().Add(-time.Duration(cutoffDays) * 24 * time.Hour)
 	livePaneIDs := multiplexer.TmuxPaneIDsAll()
+	runningPTY := runningPTYSessions()
 	latestChanged := false
 	for key, rec := range records {
 		if rec.Pane != "" && livePaneIDs != nil && !livePaneIDs[rec.Pane] {
@@ -116,7 +130,17 @@ func ScanHookState(workspacePath string) []Agent {
 			records[key] = rec
 			latestChanged = true
 		}
+		if rec.PtyID != "" && runningPTY != nil && !runningPTY[rec.PtyID] {
+			if rec.Status == Running || rec.Status == Thinking || rec.Status == WaitingInput || rec.Status == NeedsAttention {
+				rec.Status = Completed
+			}
+			records[key] = rec
+			latestChanged = true
+		}
 		if rec.Workspace == "" || rec.Agent == "" || rec.Status == "" {
+			continue
+		}
+		if isNativePTYPlaceholderRecord(rec) {
 			continue
 		}
 		cwd := filepath.Clean(rec.Workspace)
@@ -132,7 +156,7 @@ func ScanHookState(workspacePath string) []Agent {
 		task := firstNonEmpty(rec.Task, "agent session")
 		agents = append(agents, Agent{
 			ID: rec.SessionID, Name: rec.Agent, Task: task, Status: rec.Status, Path: cwd,
-			Pane: rec.Pane, Activity: rec.Time, Source: "hook", Confidence: 100,
+			Pane: rec.Pane, PtyID: rec.PtyID, Activity: rec.Time, Source: "hook", Confidence: 100,
 		})
 	}
 	if latestChanged {
@@ -196,6 +220,9 @@ func appendHookRecord(record HookRecord) error {
 
 func writeHookLatest(record HookRecord) error {
 	latest, _ := readHookLatest()
+	if latest == nil {
+		latest = map[string]HookRecord{}
+	}
 	key := hookRecordKey(record)
 	if key == "" {
 		key = fmt.Sprintf("%s:%s:%s", record.Agent, record.Workspace, record.Pane)
@@ -208,6 +235,9 @@ func writeHookLatest(record HookRecord) error {
 		}
 		if record.SessionID == "" {
 			record.SessionID = existing.SessionID
+		}
+		if record.PtyID == "" {
+			record.PtyID = existing.PtyID
 		}
 		if record.Workspace == "" {
 			record.Workspace = existing.Workspace
@@ -251,6 +281,9 @@ func readHookLatest() (map[string]HookRecord, error) {
 	if err := json.Unmarshal(data, &records); err != nil {
 		return nil, err
 	}
+	if records == nil {
+		records = map[string]HookRecord{}
+	}
 	return records, nil
 }
 
@@ -285,11 +318,39 @@ func stateDir() (string, error) {
 }
 
 func hookRecordKey(record HookRecord) string {
-	id := firstNonEmpty(record.Pane, record.SessionID)
+	id := firstNonEmpty(record.Pane, record.SessionID, record.PtyID)
 	if id == "" || record.Agent == "" {
 		return ""
 	}
 	return record.Agent + "\x00" + id
+}
+
+func isNativePTYPlaceholderRecord(record HookRecord) bool {
+	if record.Event != "session-start" {
+		return false
+	}
+	task := strings.ToLower(strings.TrimSpace(record.Task))
+	if task == "new agent" {
+		return true
+	}
+	return strings.HasPrefix(task, "new ") && strings.HasSuffix(task, " session")
+}
+
+func runningPTYSessions() map[string]bool {
+	if strings.TrimSpace(os.Getenv("GLINT_HOOK_PTY_LIVENESS")) == "0" {
+		return nil
+	}
+	resp, err := ptydaemon.ListIfRunning()
+	if err != nil {
+		return nil
+	}
+	running := make(map[string]bool, len(resp.Sessions))
+	for _, s := range resp.Sessions {
+		if s.Running {
+			running[s.ID] = true
+		}
+	}
+	return running
 }
 
 func normalizeHookSessionID(value string) string {
@@ -338,7 +399,9 @@ func promptFromPayload(payload map[string]any) string {
 func statusForHookEvent(event string, payload map[string]any) Status {
 	signal := strings.ToLower(firstNonEmpty(event, stringFromPayload(payload, "status", "type", "hook_event_name")))
 	switch signal {
-	case "prompt-submit", "userpromptsubmit", "before_agent_start", "beforeagent", "session-start", "active", "busy", "running", "agent.start", "preinvocation":
+	case "session-start":
+		return WaitingInput
+	case "prompt-submit", "userpromptsubmit", "before_agent_start", "beforeagent", "active", "busy", "running", "agent.start", "preinvocation":
 		return Running
 	case "stop", "agent-response", "agent_end", "afteragent", "session.idle", "idle", "completed", "complete", "turn-completion", "on_complete":
 		return Completed

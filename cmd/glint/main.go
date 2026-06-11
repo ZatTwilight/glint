@@ -32,6 +32,18 @@ func main() {
 				os.Exit(1)
 			}
 			return
+		case "ptyd":
+			if err := runPtyDaemon(); err != nil {
+				fmt.Fprintf(os.Stderr, "glint ptyd: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		case "pty":
+			if err := runPty(args[1:]); err != nil {
+				fmt.Fprintf(os.Stderr, "glint pty: %v\n", err)
+				os.Exit(1)
+			}
+			return
 		case "sidebar":
 			runApp(true)
 			return

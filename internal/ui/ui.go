@@ -12,7 +12,9 @@ import (
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/ZatTwilight/glint/internal/agent"
 	"github.com/ZatTwilight/glint/internal/multiplexer"
+	"github.com/ZatTwilight/glint/internal/ptydaemon"
 	"github.com/ZatTwilight/glint/internal/theme"
 	"github.com/ZatTwilight/glint/internal/util"
 	"github.com/ZatTwilight/glint/internal/vcs"
@@ -245,7 +247,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "q", "ctrl+c", "esc":
 			return m, tea.Quit
-		case "enter":
+		case "enter", "ctrl+m", "ctrl+j", "\r", "\n":
 			return m.activateSelected()
 		case "ctrl+x":
 			return m.removeSession()
@@ -349,7 +351,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if printableKey(msg.String()) {
 		m.searchQuery += msg.String()
-		m.selected = 0
+		m.selected = m.firstSearchSelection()
 		m.updateSearchStatus()
 		m.renderContent()
 		m.ensureSelectedVisible()
@@ -367,7 +369,7 @@ func (m Model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.renderContent()
 		m.ensureSelectedVisible()
 		return m, nil
-	case "enter":
+	case "enter", "ctrl+m", "ctrl+j", "\r", "\n":
 		return m.activateSelected()
 	case "up", "k":
 		m.moveSelection(-1)
@@ -387,21 +389,21 @@ func (m Model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "backspace", "ctrl+h":
 		m.searchQuery = dropLastRune(m.searchQuery)
-		m.selected = 0
+		m.selected = m.firstSearchSelection()
 		m.updateSearchStatus()
 		m.renderContent()
 		m.ensureSelectedVisible()
 		return m, nil
 	case "ctrl+u":
 		m.searchQuery = ""
-		m.selected = 0
+		m.selected = m.firstSearchSelection()
 		m.updateSearchStatus()
 		m.renderContent()
 		m.ensureSelectedVisible()
 		return m, nil
 	case "space":
 		m.searchQuery += " "
-		m.selected = 0
+		m.selected = m.firstSearchSelection()
 		m.updateSearchStatus()
 		m.renderContent()
 		m.ensureSelectedVisible()
@@ -409,6 +411,25 @@ func (m Model) updateSearch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+func (m Model) firstSearchSelection() int {
+	query := strings.TrimSpace(m.searchQuery)
+	if query == "" {
+		return 0
+	}
+	items := m.visibleItems()
+	for idx, item := range items {
+		if item.Kind == kindWorkspace && fuzzyMatch(query, workspaceSearchText(item.Workspace)) {
+			return idx
+		}
+	}
+	for idx, item := range items {
+		if item.Kind == kindAgent && m.agentMatchesSearch(item.Workspace, item.AgentIndex) {
+			return idx
+		}
+	}
+	return 0
 }
 
 func (m *Model) updateSearchStatus() {
@@ -448,7 +469,7 @@ func (m Model) updatePalette(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.renderContent()
 		m.ensureSelectedVisible()
 		return m, nil
-	case "enter":
+	case "enter", "ctrl+m", "ctrl+j", "\r", "\n":
 		model, cmd := m.activatePaletteSelected()
 		if m.paletteStandalone && !paletteModelNeedsInput(model) {
 			return model, tea.Batch(cmd, tea.Quit)
@@ -775,7 +796,7 @@ func (m Model) updateCleanupFlow(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.cleanupFlow.Selected = 0
 		m.renderContent()
 		return m, nil
-	case "enter":
+	case "enter", "ctrl+m", "ctrl+j", "\r", "\n":
 		if m.cleanupFlow.Confirm {
 			m.status = "Press y to remove or n to cancel"
 			return m, nil
@@ -960,7 +981,7 @@ func (m Model) updateWorktreeFlow(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.appendWorktreeFlowInput("n")
 		m.renderContent()
 		return m, nil
-	case "enter":
+	case "enter", "ctrl+m", "ctrl+j", "\r", "\n":
 		switch m.worktreeFlow.Step {
 		case worktreeStepBranch:
 			branches := m.filteredWorktreeBranches()
@@ -2154,6 +2175,9 @@ func (m Model) activatePaletteAction(action paletteAction) (tea.Model, tea.Cmd) 
 func (m Model) activateItem(item visibleItem) (tea.Model, tea.Cmd) {
 	if item.Kind == kindAgent {
 		ag := item.Workspace.Agents[item.AgentIndex]
+		if strings.TrimSpace(ag.PtyID) != "" {
+			return m.switchNativeAgentPane(ag)
+		}
 		if ag.Pane != "" {
 			if m.state.SidebarMode {
 				canSwap := ag.Session == "" || ag.Session == m.state.CurrentSession || ag.Session == multiplexer.ShelfSessionName
@@ -2304,12 +2328,66 @@ func (m Model) newAgentForWorkspace(selected workspace.Workspace) (tea.Model, te
 		return m, nil
 	}
 	command := newAgentCommand()
-	if err := multiplexer.LaunchSidebarMainCommand(m.state.CurrentSession, selected.Path, command); err != nil {
+	agentID := nativeAgentID(selected, command)
+	if _, err := ptydaemon.Start(agentID, selected.Path, shellCommandArgs(command)); err != nil {
 		m.status = fmt.Sprintf("New chat failed: %v", err)
+		return m, nil
+	}
+	bin, err := os.Executable()
+	if err != nil || strings.TrimSpace(bin) == "" {
+		bin = "glint"
+	}
+	paneName, err := ensureNativeAgentPane(bin, agentID)
+	if err != nil {
+		m.status = fmt.Sprintf("New chat pane failed: %v", err)
+		return m, nil
+	}
+	if err := ptydaemon.SwitchPane(paneName, agentID); err != nil {
+		m.status = fmt.Sprintf("New chat switch failed: %v", err)
 		return m, nil
 	}
 	m.status = fmt.Sprintf("Started %s in %s", command, selected.Name)
 	return m, m.doRefresh()
+}
+
+func (m Model) switchNativeAgentPane(ag agent.Agent) (tea.Model, tea.Cmd) {
+	if !m.state.SidebarMode || m.state.Multiplexer.Kind != multiplexer.Tmux {
+		m.status = "Native PTY agent switching requires tmux sidebar mode"
+		return m, nil
+	}
+	ptyID := strings.TrimSpace(ag.PtyID)
+	if ptyID == "" {
+		m.status = "Native PTY agent has no PTY session id"
+		return m, nil
+	}
+	bin, err := os.Executable()
+	if err != nil || strings.TrimSpace(bin) == "" {
+		bin = "glint"
+	}
+	paneName, err := ensureNativeAgentPane(bin, ptyID)
+	if err != nil {
+		m.status = fmt.Sprintf("Switch failed: %v", err)
+		return m, nil
+	}
+	if err := ptydaemon.SwitchPane(paneName, ptyID); err != nil {
+		m.status = fmt.Sprintf("Switch failed: %v", err)
+		return m, nil
+	}
+	m.status = fmt.Sprintf("Switched to %s", ag.Task)
+	return m, m.doRefresh()
+}
+
+func ensureNativeAgentPane(bin, agentID string) (string, error) {
+	paneName, err := multiplexer.CurrentNativeAgentPaneName()
+	if err != nil {
+		return "", err
+	}
+	paneCommand := shellEnvPrefix("GLINT_PTYD_SOCKET", "XDG_RUNTIME_DIR") + shellQuote(bin) + " pty pane --name " + shellQuote(paneName) + " --session " + shellQuote(agentID)
+	paneName, _, err = multiplexer.EnsureNativeAgentPane(paneCommand)
+	if err != nil {
+		return "", err
+	}
+	return paneName, nil
 }
 
 func (m Model) selectedWorkspace() (workspace.Workspace, bool) {
@@ -2325,6 +2403,51 @@ func newAgentCommand() string {
 		return command
 	}
 	return "pi"
+}
+
+func nativeAgentID(ws workspace.Workspace, command string) string {
+	base := strings.ToLower(ws.Name)
+	base = strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' || r == '_' {
+			return r
+		}
+		return '-'
+	}, base)
+	base = strings.Trim(base, "-")
+	if base == "" {
+		base = "agent"
+	}
+	cmd := strings.Fields(command)
+	kind := "agent"
+	if len(cmd) > 0 {
+		kind = filepath.Base(cmd[0])
+	}
+	return fmt.Sprintf("%s-%s-%d", base, kind, time.Now().UnixNano()/int64(time.Millisecond))
+}
+
+func shellCommandArgs(command string) []string {
+	shell := strings.TrimSpace(os.Getenv("SHELL"))
+	if shell == "" {
+		shell = "/bin/sh"
+	}
+	return []string{shell, "-lc", command}
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
+}
+
+func shellEnvPrefix(keys ...string) string {
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+			parts = append(parts, key+"="+shellQuote(value))
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, " ") + " "
 }
 
 func (m Model) activateWorkspace(selected workspace.Workspace) (tea.Model, tea.Cmd) {
