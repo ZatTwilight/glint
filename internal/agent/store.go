@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/ZatTwilight/glint/internal/multiplexer"
+	"github.com/ZatTwilight/glint/internal/util"
 )
 
 const stateDirName = "glint"
@@ -56,21 +57,21 @@ func RecordHook(agentName, event string, input HookInput) (HookRecord, error) {
 	}
 
 	payload := parseHookPayload(input.Raw)
-	workspace := firstNonEmpty(input.Workspace, stringFromPayload(payload, "workspace", "workspace_path", "cwd", "directory"), input.Env["GLINT_WORKSPACE"], input.Env["PWD"])
+	workspace := util.FirstNonEmpty(input.Workspace, stringFromPayload(payload, "workspace", "workspace_path", "cwd", "directory"), input.Env["GLINT_WORKSPACE"], input.Env["PWD"])
 	if workspace == "" {
 		workspace = tmuxPaneField(input.Pane, "#{pane_current_path}")
 	}
 	if workspace != "" {
-		if abs, err := filepath.Abs(expandHome(workspace)); err == nil {
+		if abs, err := filepath.Abs(util.ExpandHome(workspace)); err == nil {
 			workspace = filepath.Clean(abs)
 		} else {
-			workspace = filepath.Clean(expandHome(workspace))
+			workspace = filepath.Clean(util.ExpandHome(workspace))
 		}
 	}
 
-	pane := firstNonEmpty(input.Pane, stringFromPayload(payload, "pane", "pane_id"), input.Env["TMUX_PANE"])
-	sessionID := normalizeHookSessionID(firstNonEmpty(input.SessionID, stringFromPayload(payload, "session_id", "sessionId", "sessionID", "id", "session_file", "sessionFile"), pane))
-	task := firstNonEmpty(input.Task, promptFromPayload(payload), stringFromPayload(payload, "task", "title"))
+	pane := util.FirstNonEmpty(input.Pane, stringFromPayload(payload, "pane", "pane_id"), input.Env["TMUX_PANE"])
+	sessionID := normalizeHookSessionID(util.FirstNonEmpty(input.SessionID, stringFromPayload(payload, "session_id", "sessionId", "sessionID", "id", "session_file", "sessionFile"), pane))
+	task := util.FirstNonEmpty(input.Task, promptFromPayload(payload), stringFromPayload(payload, "task", "title"))
 	message := stringFromPayload(payload, "message", "last_assistant_message", "lastAssistantMessage", "body")
 	status := input.Status
 	if status == "" {
@@ -129,7 +130,7 @@ func ScanHookState(workspacePath string) []Agent {
 		if strings.TrimSpace(rec.Task) == "" {
 			continue
 		}
-		task := firstNonEmpty(rec.Task, "agent session")
+		task := util.FirstNonEmpty(rec.Task, "agent session")
 		agents = append(agents, Agent{
 			ID: rec.SessionID, Name: rec.Agent, Task: task, Status: rec.Status, Path: cwd,
 			Pane: rec.Pane, Activity: rec.Time, Source: "hook", Confidence: 100,
@@ -272,10 +273,10 @@ func latestPath() (string, error) {
 
 func stateDir() (string, error) {
 	if dir := os.Getenv("GLINT_STATE_DIR"); strings.TrimSpace(dir) != "" {
-		return expandHome(dir), nil
+		return util.ExpandHome(dir), nil
 	}
 	if dir := os.Getenv("XDG_STATE_HOME"); strings.TrimSpace(dir) != "" {
-		return filepath.Join(expandHome(dir), stateDirName), nil
+		return filepath.Join(util.ExpandHome(dir), stateDirName), nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -285,7 +286,7 @@ func stateDir() (string, error) {
 }
 
 func hookRecordKey(record HookRecord) string {
-	id := firstNonEmpty(record.Pane, record.SessionID)
+	id := util.FirstNonEmpty(record.Pane, record.SessionID)
 	if id == "" || record.Agent == "" {
 		return ""
 	}
@@ -336,7 +337,7 @@ func promptFromPayload(payload map[string]any) string {
 }
 
 func statusForHookEvent(event string, payload map[string]any) Status {
-	signal := strings.ToLower(firstNonEmpty(event, stringFromPayload(payload, "status", "type", "hook_event_name")))
+	signal := strings.ToLower(util.FirstNonEmpty(event, stringFromPayload(payload, "status", "type", "hook_event_name")))
 	switch signal {
 	case "prompt-submit", "userpromptsubmit", "before_agent_start", "beforeagent", "session-start", "active", "busy", "running", "agent.start", "preinvocation":
 		return Running
@@ -382,15 +383,6 @@ func normalizeToken(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
 }
 
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return strings.TrimSpace(value)
-		}
-	}
-	return ""
-}
-
 func processEnvMap() map[string]string {
 	env := map[string]string{}
 	for _, entry := range os.Environ() {
@@ -400,20 +392,6 @@ func processEnvMap() map[string]string {
 		}
 	}
 	return env
-}
-
-func expandHome(path string) string {
-	if path == "~" {
-		if home, err := os.UserHomeDir(); err == nil {
-			return home
-		}
-	}
-	if strings.HasPrefix(path, "~/") {
-		if home, err := os.UserHomeDir(); err == nil {
-			return filepath.Join(home, path[2:])
-		}
-	}
-	return path
 }
 
 func tmuxPaneField(pane, format string) string {

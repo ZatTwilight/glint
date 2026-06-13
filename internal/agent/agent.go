@@ -2,8 +2,10 @@ package agent
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -17,6 +19,7 @@ import (
 
 	debuglog "github.com/ZatTwilight/glint/internal/debug"
 	"github.com/ZatTwilight/glint/internal/multiplexer"
+	"github.com/ZatTwilight/glint/internal/util"
 )
 
 type Status string
@@ -158,7 +161,7 @@ func samePathOrChild(left, right string) bool {
 
 func applyMultiplexerProgram(agent *Agent, program multiplexer.MultiplexerProgram, score int) {
 	agent.PID = firstNonZero(agent.PID, program.PID)
-	agent.Path = firstNonEmpty(agent.Path, program.Path)
+	agent.Path = util.FirstNonEmpty(agent.Path, program.Path)
 	agent.Session = program.Session
 	agent.Window = program.Window
 	agent.Pane = program.MultiplexerId
@@ -181,7 +184,7 @@ func mergePiHistory(live, history []Agent) []Agent {
 				continue
 			}
 			matched = true
-			live[i].ID = firstNonEmpty(live[i].ID, hist.ID)
+			live[i].ID = util.FirstNonEmpty(live[i].ID, hist.ID)
 			if hist.Task != "" && hist.Task != "agent session" {
 				live[i].Task = hist.Task
 			}
@@ -320,6 +323,8 @@ func scanPiHistory(workspacePath string) []Agent {
 	return agents
 }
 
+const jsonlTailWindow = 64 * 1024
+
 func lastJSONLTimestamp(path string) time.Time {
 	file, err := os.Open(path)
 	if err != nil {
@@ -327,19 +332,66 @@ func lastJSONLTimestamp(path string) time.Time {
 	}
 	defer file.Close()
 
+	info, err := file.Stat()
+	if err != nil {
+		return scanLastJSONLTimestamp(file)
+	}
+	if info.Size() <= 0 {
+		return time.Time{}
+	}
+
+	window := int64(jsonlTailWindow)
+	if info.Size() < window {
+		window = info.Size()
+	}
+	buf := make([]byte, int(window))
+	n, err := file.ReadAt(buf, info.Size()-window)
+	if err != nil && err != io.EOF {
+		return scanLastJSONLTimestamp(file)
+	}
+	if n <= 0 {
+		return time.Time{}
+	}
+	buf = buf[:n]
+
+	if t := timestampFromJSONLLine(lastLineFromTail(buf)); !t.IsZero() {
+		return t
+	}
+	return scanLastJSONLTimestamp(file)
+}
+
+func lastLineFromTail(tail []byte) []byte {
+	tail = bytes.TrimRight(tail, "\r\n")
+	if len(tail) == 0 {
+		return nil
+	}
+	if idx := bytes.LastIndexByte(tail, '\n'); idx >= 0 {
+		return tail[idx+1:]
+	}
+	return tail
+}
+
+func scanLastJSONLTimestamp(file *os.File) time.Time {
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return time.Time{}
+	}
 	var lastLine string
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 1024), 1024*1024)
 	for scanner.Scan() {
 		lastLine = scanner.Text()
 	}
-	if lastLine == "" {
+	return timestampFromJSONLLine([]byte(lastLine))
+}
+
+func timestampFromJSONLLine(line []byte) time.Time {
+	if len(line) == 0 {
 		return time.Time{}
 	}
 	var data struct {
 		Timestamp string `json:"timestamp"`
 	}
-	if json.Unmarshal([]byte(lastLine), &data) != nil {
+	if json.Unmarshal(line, &data) != nil {
 		return time.Time{}
 	}
 	if t := parseTime(data.Timestamp); !t.IsZero() {

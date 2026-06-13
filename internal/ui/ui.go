@@ -411,7 +411,7 @@ func (m *Model) updateSearchStatus() {
 		m.status = "Search workspaces"
 		return
 	}
-	m.status = fmt.Sprintf("Search: /%s · %d match%s", m.searchQuery, count, plural(count))
+	m.status = fmt.Sprintf("Search: /%s · %d match%s", m.searchQuery, count, util.Plural(count))
 }
 
 func (m Model) updatePalette(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -527,10 +527,10 @@ func (m *Model) updatePaletteStatus() {
 		if m.paletteFiltering {
 			filterHint = "filtering"
 		}
-		m.status = fmt.Sprintf("Command palette (%s) · %d target%s · %s", mode, count, plural(count), filterHint)
+		m.status = fmt.Sprintf("Command palette (%s) · %d target%s · %s", mode, count, util.Plural(count), filterHint)
 		return
 	}
-	m.status = fmt.Sprintf("Palette (%s): %s · %d match%s", mode, m.paletteQuery, count, plural(count))
+	m.status = fmt.Sprintf("Palette (%s): %s · %d match%s", mode, m.paletteQuery, count, util.Plural(count))
 }
 
 func printableKey(key string) bool {
@@ -1542,7 +1542,7 @@ func paletteWorkspaceSubtitle(ws workspace.Workspace) string {
 		parts = append(parts, ws.Branch)
 	}
 	if len(ws.Agents) > 0 {
-		parts = append(parts, fmt.Sprintf("%d agent%s", len(ws.Agents), plural(len(ws.Agents))))
+		parts = append(parts, fmt.Sprintf("%d agent%s", len(ws.Agents), util.Plural(len(ws.Agents))))
 	}
 	return strings.Join(parts, " · ")
 }
@@ -2337,11 +2337,4 @@ func relativeTime(t time.Time) string {
 		return fmt.Sprintf("%dh ago", int(d.Hours()))
 	}
 	return fmt.Sprintf("%dd ago", int(d.Hours()/24))
-}
-
-func plural(n int) string {
-	if n == 1 {
-		return ""
-	}
-	return "s"
 }

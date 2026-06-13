@@ -1,6 +1,8 @@
 package util
 
 import (
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -15,6 +17,36 @@ func Filter[T any](ss []T, test func(T) bool) (ret []T) {
 		}
 	}
 	return
+}
+
+func FirstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func ExpandHome(path string) string {
+	if path == "~" {
+		if home, err := os.UserHomeDir(); err == nil {
+			return home
+		}
+	}
+	if strings.HasPrefix(path, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, path[2:])
+		}
+	}
+	return path
+}
+
+func Plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
 }
 
 func RightAlignLine(left, right string, width int) string {

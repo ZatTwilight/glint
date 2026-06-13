@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/ZatTwilight/glint/internal/util"
 )
 
 const glintStateDirName = "glint"
@@ -80,29 +82,14 @@ func sidebarStatePath() (string, error) {
 
 func uiStateDir() (string, error) {
 	if dir := os.Getenv("GLINT_STATE_DIR"); strings.TrimSpace(dir) != "" {
-		return expandUIHome(dir), nil
+		return util.ExpandHome(strings.TrimSpace(dir)), nil
 	}
 	if dir := os.Getenv("XDG_STATE_HOME"); strings.TrimSpace(dir) != "" {
-		return filepath.Join(expandUIHome(dir), glintStateDirName), nil
+		return filepath.Join(util.ExpandHome(strings.TrimSpace(dir)), glintStateDirName), nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
 	return filepath.Join(home, ".local", "state", glintStateDirName), nil
-}
-
-func expandUIHome(path string) string {
-	path = strings.TrimSpace(path)
-	if path == "~" {
-		if home, err := os.UserHomeDir(); err == nil {
-			return home
-		}
-	}
-	if strings.HasPrefix(path, "~/") {
-		if home, err := os.UserHomeDir(); err == nil {
-			return filepath.Join(home, strings.TrimPrefix(path, "~/"))
-		}
-	}
-	return path
 }

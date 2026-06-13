@@ -161,7 +161,7 @@ func (r itemRenderer) Render(i workspace.Workspace, selected bool, width int) st
 		leftParts = append(leftParts, branchLabel(i))
 	}
 	if len(i.Agents) > 0 {
-		leftParts = append(leftParts, fmt.Sprintf("%d agent%s", len(i.Agents), plural(len(i.Agents))))
+		leftParts = append(leftParts, fmt.Sprintf("%d agent%s", len(i.Agents), util.Plural(len(i.Agents))))
 	}
 	if i.Head != "" {
 		leftParts = append(leftParts, shortSha(i.Head))

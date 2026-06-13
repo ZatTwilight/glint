@@ -13,6 +13,7 @@ import (
 	"github.com/ZatTwilight/glint/internal/multiplexer"
 	"github.com/ZatTwilight/glint/internal/theme"
 	"github.com/ZatTwilight/glint/internal/ui"
+	"github.com/ZatTwilight/glint/internal/util"
 	"github.com/ZatTwilight/glint/internal/workspace"
 )
 
@@ -119,15 +120,6 @@ func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
 
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
-		}
-	}
-	return ""
-}
-
 func runApp(sidebarMode bool) {
 	if sidebarMode {
 		_ = multiplexer.MarkCurrentPaneSidebar()
@@ -190,7 +182,7 @@ func appState(sidebarMode bool) (ui.State, ui.RefreshFunc) {
 	}
 
 	appTheme := theme.Resolve(cfg.Theme)
-	spinnerName := firstNonEmpty(os.Getenv("GLINT_SPINNER"), cfg.Spinner)
+	spinnerName := util.FirstNonEmpty(os.Getenv("GLINT_SPINNER"), cfg.Spinner)
 
 	refresh := func() (ui.State, error) {
 		mux := multiplexer.Detect()
