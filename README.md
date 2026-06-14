@@ -136,6 +136,9 @@ Environment overrides:
 ```bash
 GLINT_SPINNER=moon glint
 GLINT_AGENT_COMMAND=claude glint attach  # command used by the "new chat" action; default is pi
+GLINT_OPENCODE_BIN=/path/to/opencode     # optional fallback for OpenCode history discovery
+GLINT_OPENCODE_DB=/path/to/opencode.db   # optional override for the OpenCode SQLite database
+GLINT_T3_DB=/path/to/state.sqlite        # optional override for T3 Code thread-name lookup
 GLINT_BIN=/path/to/glint glint hooks install pi
 ```
 
@@ -224,6 +227,7 @@ Currently only the Pi hook installer exists. Manual `glint hook <agent> <event>`
 - tmux sessions by name and current path, including sessions outside configured workspace roots.
 - Live tmux panes for known agent programs (Pi, Claude, Codex, Aider, OpenCode, Goose) when they can be matched to hook/history records.
 - Pi persisted session history under `~/.pi/agent/sessions`.
+- OpenCode persisted sessions from `~/.local/share/opencode/opencode.db` or `opencode session list --format json`, with T3 Code thread titles resolved from `~/.t3/userdata/state.sqlite` when available.
 - Hook-recorded agent status, merged with tmux pane metadata when available.
 
 Workspaces are sorted with active tmux sessions first, then by recent project/agent activity.
@@ -246,4 +250,4 @@ glint --debug
 - zellij support is mostly detection; session/pane switching and creation are not implemented.
 - Automatic hook installers only exist for Pi.
 - Agent command configuration is currently via `GLINT_AGENT_COMMAND`, not the JSON config file.
-- Historical session scanning is focused on Pi; other agents need hooks or live tmux correlation for reliable status.
+- Historical session scanning covers Pi and OpenCode; other agents need hooks or live tmux correlation for reliable status.

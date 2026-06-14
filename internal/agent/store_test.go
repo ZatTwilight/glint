@@ -93,10 +93,11 @@ func TestRecordHookStopUpdatesLatest(t *testing.T) {
 	t.Setenv("GLINT_STATE_DIR", t.TempDir())
 	t.Setenv("GLINT_HOOK_CUTOFF_DAYS", "365")
 	env := map[string]string{"PWD": "/tmp/project"}
+	now := time.Now().UTC().Add(-time.Hour)
 	_, err := RecordHook("pi", "prompt-submit", HookInput{
 		Workspace: "/tmp/project",
 		Raw:       []byte(`{"session_id":"s1","prompt":"Do work"}`),
-		Now:       time.Date(2026, 5, 29, 12, 0, 0, 0, time.UTC),
+		Now:       now,
 		Env:       env,
 	})
 	if err != nil {
@@ -105,7 +106,7 @@ func TestRecordHookStopUpdatesLatest(t *testing.T) {
 	_, err = RecordHook("pi", "stop", HookInput{
 		Workspace: "/tmp/project",
 		Raw:       []byte(`{"session_id":"s1","last_assistant_message":"Done"}`),
-		Now:       time.Date(2026, 5, 29, 12, 1, 0, 0, time.UTC),
+		Now:       now.Add(time.Minute),
 		Env:       env,
 	})
 	if err != nil {

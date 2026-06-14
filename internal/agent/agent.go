@@ -57,12 +57,14 @@ func ScanWorkspace(workspaceName string, workspacePath string) []Agent {
 
 func ScanWorkspaceWithPrograms(workspaceName string, workspacePath string, programs []multiplexer.MultiplexerProgram) []Agent {
 	// For now, rely on explicit hook state plus Pi's persisted session history.
+	// For now, rely on explicit hook state plus persisted agent session history.
 	// tmux pane inspection is intentionally disabled because pane titles/activity
 	// are too noisy for stable chat status.
 	// _ = scanLiveTmux(workspaceName, workspacePath)
 	agents := ScanHookState(workspacePath)
 	agents = mergePiHistory(agents, scanPiHistory(workspacePath))
-	agents = mergeNativePTY(agents, scanNativePTY(workspacePath))
+	agents = mergeHistory(agents, scanPiHistory(workspacePath))
+	agents = mergeHistory(agents, scanOpenCodeHistory(workspacePath))
 	agents = populateMultiplexer(agents, workspacePath, programs)
 	sortAgents(agents)
 	return agents
@@ -177,6 +179,10 @@ func applyMultiplexerProgram(agent *Agent, program multiplexer.MultiplexerProgra
 }
 
 func mergePiHistory(live, history []Agent) []Agent {
+	return mergeHistory(live, history)
+}
+
+func mergeHistory(live, history []Agent) []Agent {
 	for _, hist := range history {
 		matched := false
 		for i := range live {
@@ -205,200 +211,6 @@ func mergePiHistory(live, history []Agent) []Agent {
 		}
 	}
 	return dedupeAgents(live)
-}
-
-func scanNativePTY(workspacePath string) []Agent {
-	resp, err := ptydaemon.ListIfRunning()
-	if err != nil {
-		return nil
-	}
-	workspacePath = filepath.Clean(workspacePath)
-	var agents []Agent
-	for _, session := range resp.Sessions {
-		if filepath.Clean(session.CWD) != workspacePath {
-			continue
-		}
-		status := WaitingInput
-		activity := session.StartedAt
-		if !session.Running {
-			status = Completed
-			if !session.EndedAt.IsZero() {
-				activity = session.EndedAt
-			}
-		}
-		name := "agent"
-		if len(session.Command) > 0 {
-			name = identifyCommandName(session.Command)
-		}
-		agents = append(agents, Agent{
-			ID: session.ID, PtyID: session.ID, Name: name, Task: nativePTYTask(name, session.Command), Status: status, Path: session.CWD,
-			PID: session.PID, StartTime: session.StartedAt, Activity: activity,
-			Source: "pty", Confidence: 100,
-		})
-	}
-	return agents
-}
-
-func nativePTYTask(name string, command []string) string {
-	name = strings.TrimSpace(name)
-	if name != "" && name != "agent" {
-		return "new " + name + " session"
-	}
-	if len(command) > 0 {
-		return strings.Join(command, " ")
-	}
-	return "native PTY session"
-}
-
-func mergeNativePTY(agents, native []Agent) []Agent {
-	if len(native) == 0 {
-		return dedupeAgents(agents)
-	}
-	sort.SliceStable(native, func(i, j int) bool { return native[i].StartTime.Before(native[j].StartTime) })
-	usedAgents := map[int]bool{}
-	for idx, ptyAgent := range native {
-		best := -1
-		bestScore := 0
-		windowEnd := nextNativePTYStart(native, idx)
-		for i := range agents {
-			if usedAgents[i] {
-				continue
-			}
-			if score := nativePTYMatchScore(agents[i], ptyAgent, windowEnd); score > bestScore {
-				best = i
-				bestScore = score
-			}
-		}
-		if best == -1 || bestScore < 100 {
-			if ptyAgent.Status != Completed {
-				agents = append(agents, ptyAgent)
-			}
-			continue
-		}
-		mergeNativePTYInto(&agents[best], ptyAgent)
-		usedAgents[best] = true
-	}
-	return dedupeAgents(agents)
-}
-
-func nextNativePTYStart(native []Agent, idx int) time.Time {
-	if idx < 0 || idx >= len(native) {
-		return time.Time{}
-	}
-	current := native[idx]
-	var next time.Time
-	for i := range native {
-		if i == idx || native[i].Name != current.Name || filepath.Clean(native[i].Path) != filepath.Clean(current.Path) {
-			continue
-		}
-		if native[i].StartTime.After(current.StartTime) && (next.IsZero() || native[i].StartTime.Before(next)) {
-			next = native[i].StartTime
-		}
-	}
-	return next
-}
-
-func nativePTYMatchScore(left, right Agent, windowEnd time.Time) int {
-	if right.Source != "pty" {
-		return 0
-	}
-	if left.PtyID != "" {
-		if left.PtyID != right.ID {
-			return 0
-		}
-		return 1000 + nativePTYTaskBonus(left)
-	}
-	if left.ID != "" && right.ID != "" && left.ID == right.ID {
-		return 900 + nativePTYTaskBonus(left)
-	}
-	// A real tmux pane is already switchable through tmux. Do not hydrate it with
-	// an unrelated native PTY just because it shares the workspace.
-	if left.Pane != "" || left.History || left.Name != right.Name {
-		return 0
-	}
-	if left.Path == "" || right.Path == "" || filepath.Clean(left.Path) != filepath.Clean(right.Path) {
-		return 0
-	}
-	if left.Activity.IsZero() || right.StartTime.IsZero() {
-		return 0
-	}
-	if left.Activity.Before(right.StartTime.Add(-5 * time.Second)) {
-		return 0
-	}
-	if !windowEnd.IsZero() && !left.Activity.Before(windowEnd.Add(5*time.Second)) {
-		return 0
-	}
-	score := 100 + nativePTYTaskBonus(left)
-	age := left.Activity.Sub(right.StartTime)
-	if age < 0 {
-		age = -age
-	}
-	// Prefer the hook row that happened inside this PTY's lifetime, but avoid
-	// letting timestamp proximity beat a real prompt over a synthetic placeholder.
-	proximity := int((2*time.Minute - minDuration(age, 2*time.Minute)) / time.Second)
-	return score + proximity
-}
-
-func nativePTYTaskBonus(agent Agent) int {
-	if strings.EqualFold(strings.TrimSpace(agent.Task), "new agent") {
-		return -75
-	}
-	if strings.TrimSpace(agent.Task) == "" || agent.Task == "agent session" {
-		return 0
-	}
-	return 250
-}
-
-func mergeNativePTYInto(target *Agent, ptyAgent Agent) {
-	// Treat the daemon PTY as transport/liveness metadata, not as the canonical
-	// chat description. Keep hook/history task text when it has real prompt info,
-	// but make the row selectable via the PTY id.
-	target.PtyID = firstNonEmpty(ptyAgent.PtyID, ptyAgent.ID)
-	if target.ID == "" {
-		target.ID = ptyAgent.ID
-	}
-	target.PID = firstNonZero(target.PID, ptyAgent.PID)
-	target.Path = firstNonEmpty(target.Path, ptyAgent.Path)
-	target.StartTime = firstNonZeroTime(target.StartTime, ptyAgent.StartTime)
-	if target.Activity.IsZero() {
-		target.Activity = ptyAgent.Activity
-	}
-	if ptyAgent.Status == Completed && (target.Status == Running || target.Status == Thinking || target.Status == WaitingInput || target.Status == NeedsAttention) {
-		target.Status = Completed
-	} else if target.Status == "" {
-		target.Status = ptyAgent.Status
-	}
-	if target.Task == "" || target.Task == "agent session" {
-		target.Task = ptyAgent.Task
-	}
-	if !strings.Contains(target.Source, "pty") {
-		if target.Source == "" {
-			target.Source = "pty"
-		} else {
-			target.Source += "+pty"
-		}
-	}
-}
-
-func identifyCommandName(command []string) string {
-	for _, part := range command {
-		base := filepath.Base(part)
-		switch base {
-		case "pi", "claude", "codex", "aider", "opencode", "goose":
-			return base
-		}
-	}
-	if len(command) == 0 {
-		return "agent"
-	}
-	return filepath.Base(command[0])
-}
-
-func minDuration(left, right time.Duration) time.Duration {
-	if left < right {
-		return left
-	}
-	return right
 }
 
 func firstNonZero(left, right int) int {
