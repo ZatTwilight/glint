@@ -85,6 +85,7 @@ type Model struct {
 	paletteQuery          string
 	localPaletteCachePath string
 	localPaletteCache     []paletteTarget
+	initialRefreshDone    bool
 	worktreeFlow          worktreeFlow
 	cleanupFlow           cleanupFlow
 	agentOffsets          map[string]int
@@ -213,13 +214,13 @@ func newModel(state State, refresh RefreshFunc, paletteMode bool) Model {
 		agentOffsets:      map[string]int{},
 	}
 	m.rebuildItems()
-	if paletteMode {
+	if paletteMode && !m.initialLoading() {
 		m.updatePaletteStatus()
 	}
 	return m
 }
 
-func (m Model) Init() tea.Cmd { return tea.Batch(initialRefreshTick(), refreshTick(), animationTick()) }
+func (m Model) Init() tea.Cmd { return tea.Batch(m.doRefresh(), refreshTick(), animationTick()) }
 
 type refreshMsg struct {
 	state State
@@ -318,6 +319,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.renderContent()
 		return m, animationTick()
 	case refreshMsg:
+		m.initialRefreshDone = true
 		if msg.err != nil {
 			m.status = fmt.Sprintf("Refresh failed: %v", msg.err)
 			return m, nil
@@ -541,7 +543,15 @@ func paletteModelNeedsInput(model tea.Model) bool {
 	return ok && (m.worktreeFlow.Active || m.cleanupFlow.Active)
 }
 
+func (m Model) initialLoading() bool {
+	return !m.initialRefreshDone && m.refresh != nil && len(m.state.Workspaces) == 0
+}
+
 func (m *Model) updatePaletteStatus() {
+	if m.initialLoading() {
+		m.status = "Loading workspaces…"
+		return
+	}
 	count := len(m.paletteTargets())
 	mode := "global"
 	if m.state.Palette.LocalFirst {
@@ -1167,10 +1177,6 @@ func (m Model) sessionNameForNewPath(path, fallback string) string {
 	}
 }
 
-func initialRefreshTick() tea.Cmd {
-	return tea.Tick(time.Millisecond, func(t time.Time) tea.Msg { return refreshTickMsg(t) })
-}
-
 func refreshTick() tea.Cmd {
 	return tea.Tick(2*time.Second, func(t time.Time) tea.Msg { return refreshTickMsg(t) })
 }
@@ -1735,7 +1741,7 @@ func (m *Model) renderCleanupFlowContent() {
 		lines = append(lines, m.selectedFlowTitle(vcsCleanupVerb(flow.Backend)+" "+filepath.Base(wt.Path)+"?"))
 		lines = append(lines, m.renderer.styles.Description.Render(wt.Path))
 		lines = append(lines, m.renderer.styles.Description.Render(titleCase(vcsSourceName(flow.Backend))+": "+wt.Source))
-		lines = append(lines, "", m.renderer.styles.Description.Render("This will also kill a matching tmux session if one exists."))
+		lines = append(lines, "", m.renderer.styles.Description.Render("This will also kill a matching multiplexer session if one exists."))
 		if flow.Backend.Kind() == vcs.Jujutsu {
 			lines = append(lines, m.renderer.styles.Description.Render("Jujutsu forgets the workspace and removes its directory."))
 		}
@@ -1754,7 +1760,7 @@ func (m *Model) renderCleanupFlowContent() {
 			subtitle += " · " + wt.Source
 		}
 		if session := m.sessionForPathOrName(wt.Path, filepath.Base(wt.Path)); session != nil {
-			subtitle += " · tmux " + session.Name
+			subtitle += " · " + string(m.state.Multiplexer.Kind) + " " + session.Name
 		}
 		if selected {
 			lines = append(lines, m.selectedFlowTitle(title), m.selectedFlowDesc(subtitle))
@@ -1821,7 +1827,11 @@ func (m *Model) renderWorktreeFlowContent() {
 }
 
 func (m *Model) renderPaletteContent() {
-	targets := m.paletteTargets()
+	loading := m.initialLoading()
+	targets := []paletteTarget(nil)
+	if !loading {
+		targets = m.paletteTargets()
+	}
 	lines := []string{}
 	m.spans = make([]itemSpan, 0, len(targets))
 
@@ -1840,7 +1850,9 @@ func (m *Model) renderPaletteContent() {
 	}
 	lines = append(lines, prompt)
 
-	if len(targets) == 0 {
+	if loading {
+		lines = append(lines, m.styles.Muted.Render("Loading workspaces…"))
+	} else if len(targets) == 0 {
 		lines = append(lines, m.styles.Muted.Render("No palette matches"))
 	}
 	for idx, target := range targets {
@@ -2180,6 +2192,14 @@ func (m Model) activateItem(item visibleItem) (tea.Model, tea.Cmd) {
 		}
 		if ag.Pane != "" {
 			if m.state.SidebarMode {
+				if m.state.Multiplexer.Kind != multiplexer.Tmux {
+					if err := multiplexer.SwitchPaneWithSidebar(m.state.Multiplexer.Kind, ag.Session, ag.Window, ag.Pane); err != nil {
+						m.status = fmt.Sprintf("Switch failed: %v -- %+v, %+v, %+v", err, ag.Session, ag.Window, ag.Pane)
+						return m, nil
+					}
+					m.status = fmt.Sprintf("Switched to %s in %s:%s", ag.Name, ag.Session, ag.Pane)
+					return m, nil
+				}
 				canSwap := ag.Session == "" || ag.Session == m.state.CurrentSession || ag.Session == multiplexer.ShelfSessionName
 				if !canSwap {
 					if err := multiplexer.SwitchPaneWithSidebar(m.state.Multiplexer.Kind, ag.Session, ag.Window, ag.Pane); err != nil {
@@ -2323,8 +2343,8 @@ func (m Model) newAgentForWorkspace(selected workspace.Workspace) (tea.Model, te
 		m.status = "New chat is only available in sidebar mode"
 		return m, nil
 	}
-	if m.state.Multiplexer.Kind != multiplexer.Tmux {
-		m.status = "New chat requires tmux"
+	if m.state.Multiplexer.Kind != multiplexer.Tmux && m.state.Multiplexer.Kind != multiplexer.Zellij {
+		m.status = "New chat requires tmux or zellij"
 		return m, nil
 	}
 	command := newAgentCommand()
@@ -2351,8 +2371,8 @@ func (m Model) newAgentForWorkspace(selected workspace.Workspace) (tea.Model, te
 }
 
 func (m Model) switchNativeAgentPane(ag agent.Agent) (tea.Model, tea.Cmd) {
-	if !m.state.SidebarMode || m.state.Multiplexer.Kind != multiplexer.Tmux {
-		m.status = "Native PTY agent switching requires tmux sidebar mode"
+	if !m.state.SidebarMode || (m.state.Multiplexer.Kind != multiplexer.Tmux && m.state.Multiplexer.Kind != multiplexer.Zellij) {
+		m.status = "Native PTY agent switching requires tmux or zellij sidebar mode"
 		return m, nil
 	}
 	ptyID := strings.TrimSpace(ag.PtyID)

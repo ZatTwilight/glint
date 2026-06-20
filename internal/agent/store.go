@@ -61,7 +61,7 @@ func RecordHook(agentName, event string, input HookInput) (HookRecord, error) {
 	payload := parseHookPayload(input.Raw)
 	workspace := firstNonEmpty(input.Workspace, stringFromPayload(payload, "workspace", "workspace_path", "cwd", "directory"), input.Env["GLINT_WORKSPACE"], input.Env["PWD"])
 	if workspace == "" {
-		workspace = tmuxPaneField(input.Pane, "#{pane_current_path}")
+		workspace = multiplexerPaneWorkspace(input.Pane)
 	}
 	if workspace != "" {
 		if abs, err := filepath.Abs(expandHome(workspace)); err == nil {
@@ -71,7 +71,12 @@ func RecordHook(agentName, event string, input HookInput) (HookRecord, error) {
 		}
 	}
 
-	pane := firstNonEmpty(input.Pane, stringFromPayload(payload, "pane", "pane_id"), input.Env["TMUX_PANE"])
+	pane := firstNonEmpty(input.Pane, stringFromPayload(payload, "pane", "pane_id"), input.Env["TMUX_PANE"], input.Env["ZELLIJ_PANE_ID"])
+	if input.Env["ZELLIJ"] != "" && input.Env["TMUX"] == "" {
+		pane = normalizeZellijHookPane(pane)
+	} else {
+		pane = normalizeMultiplexerPane(pane)
+	}
 	ptyID := firstNonEmpty(input.Env["GLINT_PTY_SESSION"], stringFromPayload(payload, "pty_id", "ptyId", "ptyID", "glint_pty_session"))
 	// Keep the agent's own session ID as the canonical identity. GLINT_PTY_SESSION
 	// is transport metadata used to hydrate the row with native-PTY switching.
@@ -118,7 +123,7 @@ func ScanHookState(workspacePath string) []Agent {
 		}
 	}
 	cutoff := time.Now().Add(-time.Duration(cutoffDays) * 24 * time.Hour)
-	livePaneIDs := multiplexer.TmuxPaneIDsAll()
+	livePaneIDs := multiplexer.MultiplexerPaneIDsAll()
 	runningPTY := runningPTYSessions()
 	latestChanged := false
 	for key, rec := range records {
@@ -479,6 +484,16 @@ func expandHome(path string) string {
 	return path
 }
 
+func multiplexerPaneWorkspace(pane string) string {
+	if os.Getenv("TMUX") != "" {
+		return tmuxPaneField(pane, "#{pane_current_path}")
+	}
+	if os.Getenv("ZELLIJ") != "" {
+		return zellijPaneCWD(pane)
+	}
+	return ""
+}
+
 func tmuxPaneField(pane, format string) string {
 	if os.Getenv("TMUX") == "" {
 		return ""
@@ -493,6 +508,56 @@ func tmuxPaneField(pane, format string) string {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
+}
+
+func zellijPaneCWD(pane string) string {
+	if os.Getenv("ZELLIJ") == "" {
+		return ""
+	}
+	out, err := exec.Command("zellij", "action", "list-panes", "--json", "--all").Output()
+	if err != nil {
+		return ""
+	}
+	var panes []struct {
+		ID       int    `json:"id"`
+		IsPlugin bool   `json:"is_plugin"`
+		PaneCWD  string `json:"pane_cwd"`
+	}
+	if json.Unmarshal(out, &panes) != nil {
+		return ""
+	}
+	pane = normalizeMultiplexerPane(pane)
+	if pane == "" {
+		pane = normalizeMultiplexerPane(os.Getenv("ZELLIJ_PANE_ID"))
+	}
+	for _, p := range panes {
+		if p.IsPlugin {
+			continue
+		}
+		if normalizeMultiplexerPane(strconv.Itoa(p.ID)) == pane {
+			return strings.TrimSpace(p.PaneCWD)
+		}
+	}
+	return ""
+}
+
+func normalizeMultiplexerPane(pane string) string {
+	pane = strings.TrimSpace(pane)
+	if pane == "" || strings.HasPrefix(pane, "%") || strings.HasPrefix(pane, "terminal_") || strings.HasPrefix(pane, "plugin_") {
+		return pane
+	}
+	if os.Getenv("ZELLIJ") != "" && os.Getenv("TMUX") == "" {
+		return normalizeZellijHookPane(pane)
+	}
+	return pane
+}
+
+func normalizeZellijHookPane(pane string) string {
+	pane = strings.TrimSpace(pane)
+	if pane == "" || strings.HasPrefix(pane, "terminal_") || strings.HasPrefix(pane, "plugin_") {
+		return pane
+	}
+	return "terminal_" + pane
 }
 
 func TailHookEvents(limit int) ([]HookRecord, error) {

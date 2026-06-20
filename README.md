@@ -1,8 +1,8 @@
 # glint
 
-Glint is a terminal-native workspace switcher and agent sidebar written in Go with Bubble Tea. It scans your local project roots, correlates them with tmux sessions and agent lifecycle state, and gives you a fast keyboard UI for jumping between projects, worktrees, and running agent chats.
+Glint is a terminal-native workspace switcher and agent sidebar written in Go with Bubble Tea. It scans your local project roots, correlates them with tmux/Zellij sessions and agent lifecycle state, and gives you a fast keyboard UI for jumping between projects, worktrees, and running agent chats.
 
-This is still a prototype, but the current shape is usable primarily with tmux. Zellij/plain-terminal detection exists; most pane/session actions are tmux-only today.
+This is still a prototype. tmux and Zellij are both actionable backends; the tmux-only shelf remains the main feature not yet mirrored in Zellij.
 
 ## Install / build
 
@@ -30,9 +30,9 @@ make fmt    # gofmt -w .
 
 ```bash
 glint                    # full-screen workspace UI
-glint sidebar            # same UI, marked as the Glint sidebar pane inside tmux
-glint attach             # create a left tmux sidebar split running `glint sidebar`
-glint popup [options]    # open the command palette in a tmux popup
+glint sidebar            # same UI, marked as the Glint sidebar pane inside tmux/Zellij
+glint attach             # create a tmux/Zellij sidebar split running `glint sidebar`
+glint popup [options]    # open the command palette in a tmux popup or Zellij floating pane
 glint palette [options]  # run only the command palette
 glint hook ...           # record an agent lifecycle event
 glint events [limit]     # print recent recorded hook events
@@ -49,9 +49,9 @@ glint debug data         # dump scanned config/session/workspace data as JSON
 
 Palette options include `--movement`, `--local`, `--global`, `--no-agents`, `--no-actions`, `--no-workspaces`, `--no-create`, `--no-cleanup`, and `--agents-only`.
 
-## tmux usage
+## tmux / Zellij usage
 
-Glint works best from inside tmux. Mouse support in tmux is optional, but if you want to use it enable:
+Glint works best from inside tmux or Zellij. Mouse support in tmux is optional, but if you want to use it enable:
 
 ```bash
 tmux set -g mouse on
@@ -67,6 +67,7 @@ Or manually split a pane:
 
 ```bash
 tmux split-window -h -l 36 'glint sidebar'
+zellij action new-pane --direction right --name glint-sidebar -- glint sidebar
 ```
 
 ## Experimental native PTY daemon
@@ -94,7 +95,7 @@ glint pty kill claude-demo
 
 The daemon listens on `$GLINT_PTYD_SOCKET`, or `$XDG_RUNTIME_DIR/glint/ptyd.sock`, or `/tmp/glint-$UID/ptyd.sock`.
 
-In the tmux sidebar, `n` now starts the configured agent command in a native Glint PTY session and turns the pane to the right of the sidebar into a remotely switchable `glint pty pane`. When the agent process exits, that viewer pane execs back into your login shell and stops being Glint-managed.
+In the tmux or Zellij sidebar, `n` starts the configured agent command in a native Glint PTY session and opens/reuses a remotely switchable `glint pty pane`. When the agent process exits, that viewer pane execs back into your login shell and stops being Glint-managed.
 
 ## Configuration
 
@@ -148,13 +149,13 @@ Main UI:
 
 - `↑`/`↓` or `j`/`k`: move selection
 - `/`: search/filter workspaces and agents
-- `Enter`: switch to an existing tmux session or create one for the selected workspace
+- `Enter`: switch to an existing tmux/Zellij session or create one for the selected workspace
 - `ctrl+p`: command palette
 - `ctrl+w`: create/switch VCS worktree or jj workspace
 - `ctrl+r`: cleanup/remove a worktree or jj workspace
-- `ctrl+x`: delete the matching tmux session/workspace flow for the selection
+- `ctrl+x`: delete the matching tmux/Zellij session/workspace flow for the selection
 - `n`: start a new agent chat in the sidebar main pane (`GLINT_AGENT_COMMAND`, default `pi`)
-- `b`: shelve the current main pane or selected live agent pane into Glint's tmux shelf
+- `b`: shelve the current main pane or selected live agent pane into Glint's tmux shelf (tmux only)
 - `c`, `space`, or `tab`: collapse/expand visible agent entries
 - `[`/`]` or `h`/`l`: jump between top-level projects
 - `s`: cycle spinner style
@@ -221,16 +222,16 @@ Currently only the Pi hook installer exists. Manual `glint hook <agent> <event>`
 
 ## What Glint currently detects
 
-- tmux, zellij, or plain terminal environment; tmux is the only fully actionable backend.
+- tmux, zellij, or plain terminal environment; tmux and Zellij support session/pane actions.
 - Directories under configured workspace roots.
 - Git repositories/worktrees and Jujutsu (`jj`) repos/workspaces, grouped under their parent project.
-- tmux sessions by name and current path, including sessions outside configured workspace roots.
-- Live tmux panes for known agent programs (Pi, Claude, Codex, Aider, OpenCode, Goose) when they can be matched to hook/history records.
+- tmux/Zellij sessions by name and current path where available, including sessions outside configured workspace roots.
+- Live tmux/Zellij panes for known agent programs (Pi, Claude, Codex, Aider, OpenCode, Goose) when they can be matched to hook/history records.
 - Pi persisted session history under `~/.pi/agent/sessions`.
 - OpenCode persisted sessions from `~/.local/share/opencode/opencode.db` or `opencode session list --format json`, with T3 Code thread titles resolved from `~/.t3/userdata/state.sqlite` when available.
-- Hook-recorded agent status, merged with tmux pane metadata when available.
+- Hook-recorded agent status, merged with multiplexer pane metadata when available.
 
-Workspaces are sorted with active tmux sessions first, then by recent project/agent activity.
+Workspaces are sorted with active multiplexer sessions first, then by recent project/agent activity.
 
 ## Debugging
 
@@ -247,7 +248,7 @@ glint --debug
 
 ## Current limitations / next work
 
-- zellij support is mostly detection; session/pane switching and creation are not implemented.
+- Zellij does not yet mirror the tmux shelf workflow.
 - Automatic hook installers only exist for Pi.
 - Agent command configuration is currently via `GLINT_AGENT_COMMAND`, not the JSON config file.
-- Historical session scanning covers Pi and OpenCode; other agents need hooks or live tmux correlation for reliable status.
+- Historical session scanning covers Pi and OpenCode; other agents need hooks or live multiplexer correlation for reliable status.

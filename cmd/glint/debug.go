@@ -85,8 +85,8 @@ func runDebugData(args []string, out io.Writer) error {
 	mux := multiplexer.Detect()
 	t.lap("multiplexer.Detect")
 
-	programs := multiplexer.TmuxProgramsAll(agent.AgentName, agent.NewLazyDescendantCommands())
-	t.lap("multiplexer.TmuxProgramsAll")
+	programs := multiplexer.MultiplexerProgramsAll(agent.AgentName, agent.NewLazyDescendantCommands())
+	t.lap("multiplexer.MultiplexerProgramsAll")
 
 	sessionNames := mux.SessionNames()
 	sessionPaths := mux.SessionPaths()
