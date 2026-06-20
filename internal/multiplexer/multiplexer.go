@@ -883,7 +883,15 @@ func outputTmux(args ...string) ([]byte, error) {
 }
 
 func runZellij(args ...string) error {
-	out, err := exec.Command("zellij", args...).CombinedOutput()
+	return runZellijInDir("", args...)
+}
+
+func runZellijInDir(dir string, args ...string) error {
+	cmd := exec.Command("zellij", args...)
+	if strings.TrimSpace(dir) != "" {
+		cmd.Dir = dir
+	}
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		msg := strings.TrimSpace(string(out))
 		if msg == "" {
@@ -904,6 +912,18 @@ func outputZellij(args ...string) ([]byte, error) {
 		return nil, fmt.Errorf("zellij %s: %s", strings.Join(args, " "), msg)
 	}
 	return out, nil
+}
+
+func zellijSessionPanes(session string) ([]zellijPane, error) {
+	out, err := outputZellij("--session", session, "action", "list-panes", "--json", "--all")
+	if err != nil {
+		return nil, err
+	}
+	var panes []zellijPane
+	if err := json.Unmarshal(out, &panes); err != nil {
+		return nil, err
+	}
+	return panes, nil
 }
 
 func verticalOverlap(a, b PaneGeometry) int {
@@ -957,18 +977,10 @@ func NewSession(kind Kind, name, path string) error {
 	case Tmux:
 		return exec.Command("tmux", "new-session", "-d", "-s", name, "-c", path).Run()
 	case Zellij:
-		if err := runZellij("attach", "--create-background", name); err != nil {
-			return err
-		}
 		if strings.TrimSpace(path) == "" {
-			return nil
+			return runZellij("attach", "--create-background", name)
 		}
-		cmd := "cd " + shellQuote(path) + " && exec " + shellQuote(shellPath())
-		if _, err := outputZellij("--session", name, "action", "new-pane", "--name", "main", "--", "/bin/sh", "-lc", cmd); err != nil {
-			return err
-		}
-		_ = runZellij("--session", name, "action", "close-pane", "--pane-id", "terminal_0")
-		return nil
+		return runZellijInDir(path, "attach", "--create-background", name)
 	default:
 		return fmt.Errorf("not running inside a supported multiplexer")
 	}
@@ -1043,6 +1055,31 @@ func tmuxSessions() []Session {
 		sessions = append(sessions, session)
 	}
 	return sessions
+}
+
+func ZellijSessionPath(session string) string {
+	return zellijSessionPrimaryPath(session)
+}
+
+func zellijSessionPrimaryPath(session string) string {
+	panes, err := zellijSessionPanes(session)
+	if err != nil {
+		return ""
+	}
+	fallback := ""
+	for _, pane := range panes {
+		if pane.IsPlugin || pane.Exited || strings.TrimSpace(pane.PaneCWD) == "" || isGlintZellijPane(pane) {
+			continue
+		}
+		path := strings.TrimSpace(pane.PaneCWD)
+		if pane.IsFocused || strings.TrimSpace(pane.Title) == "main" {
+			return path
+		}
+		if fallback == "" {
+			fallback = path
+		}
+	}
+	return fallback
 }
 
 func zellijSessions() []Session {

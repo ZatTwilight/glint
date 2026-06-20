@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/ZatTwilight/glint/internal/agent"
+	"github.com/ZatTwilight/glint/internal/multiplexer"
 	"github.com/ZatTwilight/glint/internal/workspace"
 )
 
@@ -53,6 +54,31 @@ func TestPaletteSearchMatchesMultiWordWorkQueries(t *testing.T) {
 	}
 	if got := targets[0].Title; !strings.Contains(got, "Add dotfiles") {
 		t.Fatalf("top palette target = %q, want dotfiles agent", got)
+	}
+}
+
+func TestSessionForPathOrNameIgnoresMismatchedNamedSession(t *testing.T) {
+	m := New(State{Multiplexer: multiplexer.Info{Kind: multiplexer.Zellij, Sessions: []multiplexer.Session{
+		{Name: "feature", Path: "/tmp/other"},
+		{Name: "feature-2", Path: "/tmp/feature"},
+	}}}, nil)
+
+	session := m.sessionForPathOrName("/tmp/feature", "feature")
+	if session == nil {
+		t.Fatal("expected path-matching session")
+	}
+	if got, want := session.Name, "feature-2"; got != want {
+		t.Fatalf("session = %q, want %q", got, want)
+	}
+}
+
+func TestSessionNameForNewPathAvoidsMismatchedName(t *testing.T) {
+	m := New(State{Multiplexer: multiplexer.Info{Kind: multiplexer.Zellij, Sessions: []multiplexer.Session{
+		{Name: "feature", Path: "/tmp/other"},
+	}}}, nil)
+
+	if got, want := m.sessionNameForNewPath("/tmp/feature", "feature"), "feature-2"; got != want {
+		t.Fatalf("session name = %q, want %q", got, want)
 	}
 }
 

@@ -2499,10 +2499,13 @@ func (m Model) activateWorkspace(selected workspace.Workspace) (tea.Model, tea.C
 
 	if session != nil {
 		sessionName = session.Name
-	} else if !m.state.Multiplexer.SessionNames()[selected.Name] {
-		if err := multiplexer.NewSession(m.state.Multiplexer.Kind, selected.Name, selected.Path); err != nil {
-			m.status = fmt.Sprintf("Create failed: %v", err)
-			return m, nil
+	} else {
+		sessionName = m.sessionNameForNewPath(selected.Path, selected.Name)
+		if !m.state.Multiplexer.SessionNames()[sessionName] {
+			if err := multiplexer.NewSession(m.state.Multiplexer.Kind, sessionName, selected.Path); err != nil {
+				m.status = fmt.Sprintf("Create failed: %v", err)
+				return m, nil
+			}
 		}
 	}
 
@@ -2525,15 +2528,26 @@ func (m Model) sessionFromWorkspace(ws workspace.Workspace) *multiplexer.Session
 func (m Model) sessionForPathOrName(path, name string) *multiplexer.Session {
 	sessionNames := m.state.Multiplexer.SessionByName()
 	sessionPaths := m.state.Multiplexer.SessionByPath()
+	cleanPath := filepath.Clean(path)
 
-	session, active := sessionNames[name]
-	if !active {
-		session, active = sessionPaths[filepath.Clean(path)]
+	if session, active := sessionNames[name]; active {
+		if strings.TrimSpace(session.Path) == "" {
+			if m.state.Multiplexer.Kind == multiplexer.Zellij {
+				if zellijPath := multiplexer.ZellijSessionPath(session.Name); zellijPath != "" && filepath.Clean(zellijPath) == cleanPath {
+					session.Path = zellijPath
+					return &session
+				}
+			} else {
+				return &session
+			}
+		} else if filepath.Clean(session.Path) == cleanPath {
+			return &session
+		}
 	}
-	if !active {
-		return nil
+	if session, active := sessionPaths[cleanPath]; active {
+		return &session
 	}
-	return &session
+	return nil
 }
 
 func relativeTime(t time.Time) string {
