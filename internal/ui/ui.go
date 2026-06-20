@@ -871,6 +871,24 @@ func (m Model) filteredCleanupWorktrees() []vcs.WorkspaceRef {
 	return worktrees
 }
 
+func cleanupRepoPath(backend vcs.Backend, repoPath, targetPath string) string {
+	if backend == nil || filepath.Clean(repoPath) != filepath.Clean(targetPath) {
+		return repoPath
+	}
+	refs, err := backend.WorkspaceRefs(repoPath)
+	if err != nil {
+		return repoPath
+	}
+	targetPath = filepath.Clean(targetPath)
+	for _, ref := range refs {
+		if strings.TrimSpace(ref.Path) == "" || filepath.Clean(ref.Path) == targetPath {
+			continue
+		}
+		return ref.Path
+	}
+	return repoPath
+}
+
 func (m Model) confirmCleanupWorktree() (tea.Model, tea.Cmd) {
 	if len(m.cleanupFlow.WorkspaceRefs) == 0 {
 		m.status = "Pick a project"
@@ -897,6 +915,7 @@ func (m Model) removeCleanupWorktree(force bool) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	wt := m.cleanupFlow.WorkspaceRefs[0]
+	var sessionToKill *multiplexer.Session
 	if session := m.sessionForPathOrName(wt.Path, filepath.Base(wt.Path)); session != nil {
 		if session.Name == multiplexer.ShelfSessionName {
 			m.status = fmt.Sprintf("Can't remove %s with protected session %s", vcsUnit(m.cleanupFlow.Backend), session.Name)
@@ -913,14 +932,18 @@ func (m Model) removeCleanupWorktree(force bool) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
-		if err := multiplexer.KillSession(m.state.Multiplexer.Kind, session.Name); err != nil {
-			m.status = fmt.Sprintf("Kill session failed: %v", err)
-			return m, nil
-		}
+		sessionToKill = session
 	}
-	if err := m.cleanupFlow.Backend.RemoveWorkspace(m.cleanupFlow.Workspace.Path, wt.Path, force); err != nil {
+	repoPath := cleanupRepoPath(m.cleanupFlow.Backend, m.cleanupFlow.Workspace.Path, wt.Path)
+	if err := m.cleanupFlow.Backend.RemoveWorkspace(repoPath, wt.Path, force); err != nil {
 		m.status = fmt.Sprintf("Remove failed: %v", err)
 		return m, nil
+	}
+	if sessionToKill != nil {
+		if err := multiplexer.KillSession(m.state.Multiplexer.Kind, sessionToKill.Name); err != nil {
+			m.status = fmt.Sprintf("Removed %s but kill session failed: %v", vcsUnit(m.cleanupFlow.Backend), err)
+			return m, nil
+		}
 	}
 	backend := m.cleanupFlow.Backend
 	quitWhenDone := m.paletteStandalone && m.cleanupFlow.FromPalette
