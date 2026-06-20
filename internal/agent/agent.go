@@ -57,9 +57,9 @@ func ScanWorkspace(workspaceName string, workspacePath string) []Agent {
 
 func ScanWorkspaceWithPrograms(workspaceName string, workspacePath string, programs []multiplexer.MultiplexerProgram) []Agent {
 	// For now, rely on explicit hook state plus Pi's persisted session history.
-	// tmux pane inspection is intentionally disabled because pane titles/activity
+	// Direct pane inspection is intentionally disabled because pane titles/activity
 	// are too noisy for stable chat status.
-	// _ = scanLiveTmux(workspaceName, workspacePath)
+	// _ = scanLiveMultiplexer(workspaceName, workspacePath)
 	agents := ScanHookState(workspacePath)
 	agents = mergePiHistory(agents, scanPiHistory(workspacePath))
 	agents = mergeNativePTY(agents, scanNativePTY(workspacePath))
@@ -69,8 +69,8 @@ func ScanWorkspaceWithPrograms(workspaceName string, workspacePath string, progr
 }
 
 func populateMultiplexer(agents []Agent, workspacePath string, programs []multiplexer.MultiplexerProgram) []Agent {
-	if programs == nil && os.Getenv("TMUX") != "" {
-		programs = multiplexer.TmuxPrograms(workspacePath, AgentName, DescendantCommands)
+	if programs == nil && (os.Getenv("TMUX") != "" || os.Getenv("ZELLIJ") != "") {
+		programs = multiplexer.MultiplexerPrograms(workspacePath, AgentName, DescendantCommands)
 	} else {
 		programs = multiplexer.FilterProgramsByWorkspace(programs, workspacePath)
 	}
@@ -311,8 +311,8 @@ func nativePTYMatchScore(left, right Agent, windowEnd time.Time) int {
 	if left.ID != "" && right.ID != "" && left.ID == right.ID {
 		return 900 + nativePTYTaskBonus(left)
 	}
-	// A real tmux pane is already switchable through tmux. Do not hydrate it with
-	// an unrelated native PTY just because it shares the workspace.
+	// A real multiplexer pane is already switchable through tmux/Zellij. Do not
+	// hydrate it with an unrelated native PTY just because it shares the workspace.
 	if left.Pane != "" || left.History || left.Name != right.Name {
 		return 0
 	}

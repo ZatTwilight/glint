@@ -1,6 +1,7 @@
 package multiplexer
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -55,6 +56,30 @@ type TmuxPane struct {
 	Dead    bool
 }
 
+type zellijPane struct {
+	ID           int    `json:"id"`
+	IsPlugin     bool   `json:"is_plugin"`
+	IsFocused    bool   `json:"is_focused"`
+	IsSuppressed bool   `json:"is_suppressed"`
+	Exited       bool   `json:"exited"`
+	Title        string `json:"title"`
+	PaneCommand  string `json:"pane_command"`
+	PaneCWD      string `json:"pane_cwd"`
+	TabID        int    `json:"tab_id"`
+	TabPosition  int    `json:"tab_position"`
+	TabName      string `json:"tab_name"`
+	PaneX        int    `json:"pane_x"`
+	PaneY        int    `json:"pane_y"`
+	PaneRows     int    `json:"pane_rows"`
+	PaneColumns  int    `json:"pane_columns"`
+}
+
+var (
+	zellijPanesMu      sync.Mutex
+	zellijPanesCache   []zellijPane
+	zellijPanesCacheAt time.Time
+)
+
 func (i Info) CurrentWindow() (string, error) {
 	switch i.Kind {
 	case Tmux:
@@ -69,7 +94,7 @@ func (i Info) CurrentWindow() (string, error) {
 		}
 		return strings.TrimSpace(string(out)), nil
 	case Zellij:
-		return "", fmt.Errorf("zellij session switching is not implemented yet")
+		return zellijCurrentTabID()
 	default:
 		return "", fmt.Errorf("not running inside a supported multiplexer")
 	}
@@ -89,7 +114,10 @@ func (i Info) CurrentSession() (string, error) {
 		}
 		return strings.TrimSpace(string(out)), nil
 	case Zellij:
-		return "", fmt.Errorf("zellij session switching is not implemented yet")
+		if name := strings.TrimSpace(os.Getenv("ZELLIJ_SESSION_NAME")); name != "" {
+			return name, nil
+		}
+		return zellijCurrentSessionName()
 	default:
 		return "", fmt.Errorf("not running inside a supported multiplexer")
 	}
@@ -140,6 +168,7 @@ func Detect() Info {
 	}
 	if os.Getenv("ZELLIJ") != "" {
 		info.Kind = Zellij
+		info.Sessions = zellijSessions()
 		return info
 	}
 	return info
@@ -150,7 +179,7 @@ func SwitchSession(kind Kind, name string) error {
 	case Tmux:
 		return exec.Command("tmux", "switch-client", "-t", name).Run()
 	case Zellij:
-		return fmt.Errorf("zellij session switching is not implemented yet")
+		return runZellij("action", "switch-session", name)
 	default:
 		return fmt.Errorf("not running inside a supported multiplexer")
 	}
@@ -164,7 +193,7 @@ func SwitchPaneById(kind Kind, paneId string) error {
 		}
 		return nil
 	case Zellij:
-		return fmt.Errorf("zellij pane switching is not implemented yet")
+		return runZellij("action", "focus-pane-id", normalizeZellijPaneID(paneId))
 	default:
 		return fmt.Errorf("not running inside a supported multiplexer")
 	}
@@ -174,11 +203,33 @@ func CurrentPaneID() (string, error) {
 	if paneID := strings.TrimSpace(os.Getenv("TMUX_PANE")); paneID != "" {
 		return paneID, nil
 	}
-	out, err := exec.Command("tmux", "display-message", "-p", "#{pane_id}").Output()
-	if err != nil {
-		return "", err
+	if paneID := strings.TrimSpace(os.Getenv("ZELLIJ_PANE_ID")); paneID != "" {
+		return normalizeZellijPaneID(paneID), nil
 	}
-	return strings.TrimSpace(string(out)), nil
+	if os.Getenv("TMUX") != "" {
+		out, err := exec.Command("tmux", "display-message", "-p", "#{pane_id}").Output()
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(string(out)), nil
+	}
+	if os.Getenv("ZELLIJ") != "" {
+		return zellijFocusedPaneID()
+	}
+	return "", fmt.Errorf("not running inside a supported multiplexer")
+}
+
+func MultiplexerPaneIDsAll() map[string]bool {
+	if os.Getenv("TMUX") != "" {
+		return TmuxPaneIDsAll()
+	}
+	if os.Getenv("ZELLIJ") != "" {
+		// Zellij's stable pane ids are per-session, and the CLI only exposes panes
+		// for the current session. Returning nil avoids marking panes in other
+		// sessions as completed just because they are not visible from here.
+		return nil
+	}
+	return nil
 }
 
 func TmuxPaneIDsAll() map[string]bool {
@@ -189,6 +240,21 @@ func TmuxPaneIDsAll() map[string]bool {
 	ids := map[string]bool{}
 	for _, id := range strings.Fields(string(out)) {
 		ids[id] = true
+	}
+	return ids
+}
+
+func ZellijPaneIDsCurrentSession() map[string]bool {
+	panes, err := zellijPanes()
+	if err != nil {
+		return nil
+	}
+	ids := map[string]bool{}
+	for _, pane := range panes {
+		if pane.IsPlugin {
+			continue
+		}
+		ids[normalizeZellijPaneID(strconv.Itoa(pane.ID))] = true
 	}
 	return ids
 }
@@ -443,6 +509,9 @@ func MarkCurrentPaneSidebar() error {
 	if err != nil {
 		return err
 	}
+	if os.Getenv("ZELLIJ") != "" && os.Getenv("TMUX") == "" {
+		return runZellij("action", "rename-pane", "glint-sidebar")
+	}
 	return setPaneRole(paneID, "sidebar")
 }
 
@@ -469,6 +538,13 @@ func BringPaneToSidebarMain(sourcePaneID string) error {
 }
 
 func CurrentNativeAgentPaneName() (string, error) {
+	if os.Getenv("ZELLIJ") != "" && os.Getenv("TMUX") == "" {
+		windowID, err := zellijCurrentTabID()
+		if err != nil {
+			return "", err
+		}
+		return nativeAgentPaneName("zellij-" + windowID), nil
+	}
 	sidebarPaneID, err := CurrentPaneID()
 	if err != nil {
 		return "", err
@@ -481,6 +557,25 @@ func CurrentNativeAgentPaneName() (string, error) {
 }
 
 func EnsureNativeAgentPane(command string) (string, string, error) {
+	if os.Getenv("ZELLIJ") != "" && os.Getenv("TMUX") == "" {
+		paneName, err := CurrentNativeAgentPaneName()
+		if err != nil {
+			return "", "", err
+		}
+		if paneID := zellijNamedPane(paneName); paneID != "" {
+			return paneName, paneID, nil
+		}
+		out, err := outputZellij("action", "new-pane", "--direction", "right", "--name", paneName, "--", shellPath(), "-lc", command)
+		if err != nil {
+			return "", "", err
+		}
+		paneID := normalizeZellijPaneID(strings.TrimSpace(string(out)))
+		if paneID == "" {
+			return "", "", fmt.Errorf("created native agent pane but zellij returned no pane ID")
+		}
+		return paneName, paneID, nil
+	}
+
 	sidebarPaneID, err := CurrentPaneID()
 	if err != nil {
 		return "", "", err
@@ -541,6 +636,9 @@ func nativeAgentPaneName(windowID string) string {
 	name = strings.TrimPrefix(name, "@")
 	if name == "" {
 		name = "main"
+	}
+	if strings.HasPrefix(name, "zellij-") {
+		return name + "-agent"
 	}
 	return "tmux-" + name + "-agent"
 }
@@ -784,6 +882,30 @@ func outputTmux(args ...string) ([]byte, error) {
 	return out, nil
 }
 
+func runZellij(args ...string) error {
+	out, err := exec.Command("zellij", args...).CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg == "" {
+			return err
+		}
+		return fmt.Errorf("zellij %s: %s", strings.Join(args, " "), msg)
+	}
+	return nil
+}
+
+func outputZellij(args ...string) ([]byte, error) {
+	out, err := exec.Command("zellij", args...).CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg == "" {
+			return nil, err
+		}
+		return nil, fmt.Errorf("zellij %s: %s", strings.Join(args, " "), msg)
+	}
+	return out, nil
+}
+
 func verticalOverlap(a, b PaneGeometry) int {
 	top := max(a.Top, b.Top)
 	bottom := min(a.Top+a.Height, b.Top+b.Height)
@@ -806,7 +928,25 @@ func SwitchPane(kind Kind, session, window, pane string) error {
 		}
 		return nil
 	case Zellij:
-		return fmt.Errorf("zellij pane switching is not implemented yet")
+		if strings.TrimSpace(session) != "" {
+			args := []string{"action", "switch-session"}
+			if strings.TrimSpace(pane) != "" {
+				args = append(args, "--pane-id", normalizeZellijPaneID(pane))
+			}
+			args = append(args, session)
+			if err := runZellij(args...); err != nil {
+				return err
+			}
+		}
+		if strings.TrimSpace(window) != "" {
+			if err := runZellij("action", "go-to-tab-by-id", window); err != nil {
+				return err
+			}
+		}
+		if strings.TrimSpace(pane) != "" {
+			return runZellij("action", "focus-pane-id", normalizeZellijPaneID(pane))
+		}
+		return nil
 	default:
 		return fmt.Errorf("not running inside a supported multiplexer")
 	}
@@ -817,7 +957,18 @@ func NewSession(kind Kind, name, path string) error {
 	case Tmux:
 		return exec.Command("tmux", "new-session", "-d", "-s", name, "-c", path).Run()
 	case Zellij:
-		return fmt.Errorf("zellij session creation is not implemented yet")
+		if err := runZellij("attach", "--create-background", name); err != nil {
+			return err
+		}
+		if strings.TrimSpace(path) == "" {
+			return nil
+		}
+		cmd := "cd " + shellQuote(path) + " && exec " + shellQuote(shellPath())
+		if _, err := outputZellij("--session", name, "action", "new-pane", "--name", "main", "--", "/bin/sh", "-lc", cmd); err != nil {
+			return err
+		}
+		_ = runZellij("--session", name, "action", "close-pane", "--pane-id", "terminal_0")
+		return nil
 	default:
 		return fmt.Errorf("not running inside a supported multiplexer")
 	}
@@ -832,7 +983,7 @@ func KillSession(kind Kind, name string) error {
 	case Tmux:
 		return exec.Command("tmux", "kill-session", "-t", name).Run()
 	case Zellij:
-		return fmt.Errorf("zellij session deletion is not implemented yet")
+		return runZellij("kill-session", name)
 	default:
 		return fmt.Errorf("not running inside a supported multiplexer")
 	}
@@ -847,7 +998,7 @@ func KillPane(kind Kind, paneID string) error {
 	case Tmux:
 		return exec.Command("tmux", "kill-pane", "-t", paneID).Run()
 	case Zellij:
-		return fmt.Errorf("zellij pane deletion is not implemented yet")
+		return runZellij("action", "close-pane", "--pane-id", normalizeZellijPaneID(paneID))
 	default:
 		return fmt.Errorf("not running inside a supported multiplexer")
 	}
@@ -894,6 +1045,39 @@ func tmuxSessions() []Session {
 	return sessions
 }
 
+func zellijSessions() []Session {
+	out, err := exec.Command("zellij", "list-sessions", "--no-formatting").Output()
+	if err != nil {
+		return nil
+	}
+	current := strings.TrimSpace(os.Getenv("ZELLIJ_SESSION_NAME"))
+	currentPath, _ := os.Getwd()
+	var sessions []Session
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		name := line
+		if idx := strings.Index(name, " ["); idx >= 0 {
+			name = strings.TrimSpace(name[:idx])
+		} else if idx := strings.Index(name, " ("); idx >= 0 {
+			name = strings.TrimSpace(name[:idx])
+		} else if fields := strings.Fields(name); len(fields) > 0 {
+			name = fields[0]
+		}
+		if name == "" {
+			continue
+		}
+		session := Session{Name: name, Attached: strings.Contains(line, "(current)") || name == current}
+		if session.Attached && currentPath != "" {
+			session.Path = currentPath
+		}
+		sessions = append(sessions, session)
+	}
+	return sessions
+}
+
 type MultiplexerProgram struct {
 	PID           int
 	Path          string
@@ -905,8 +1089,26 @@ type MultiplexerProgram struct {
 	Current       bool
 }
 
+func MultiplexerPrograms(workspacePath string, identify func(...string) (string, bool), descendants func(string) []string) []MultiplexerProgram {
+	return FilterProgramsByWorkspace(MultiplexerProgramsAll(identify, descendants), workspacePath)
+}
+
+func MultiplexerProgramsAll(identify func(...string) (string, bool), descendants func(string) []string) []MultiplexerProgram {
+	if os.Getenv("TMUX") != "" {
+		return TmuxProgramsAll(identify, descendants)
+	}
+	if os.Getenv("ZELLIJ") != "" {
+		return ZellijProgramsAll(identify)
+	}
+	return nil
+}
+
 func TmuxPrograms(workspacePath string, identify func(...string) (string, bool), descendants func(string) []string) []MultiplexerProgram {
 	return FilterProgramsByWorkspace(TmuxProgramsAll(identify, descendants), workspacePath)
+}
+
+func ZellijPrograms(workspacePath string, identify func(...string) (string, bool)) []MultiplexerProgram {
+	return FilterProgramsByWorkspace(ZellijProgramsAll(identify), workspacePath)
 }
 
 func FilterProgramsByWorkspace(programs []MultiplexerProgram, workspacePath string) []MultiplexerProgram {
@@ -987,6 +1189,41 @@ func TmuxProgramsAll(identify func(...string) (string, bool), descendants func(s
 		})
 	}
 	wg.Wait()
+	sortPrograms(programs)
+	return programs
+}
+
+func ZellijProgramsAll(identify func(...string) (string, bool)) []MultiplexerProgram {
+	if os.Getenv("ZELLIJ") == "" || os.Getenv("TMUX") != "" {
+		return nil
+	}
+	panes, err := zellijPanes()
+	if err != nil {
+		return nil
+	}
+	session := strings.TrimSpace(os.Getenv("ZELLIJ_SESSION_NAME"))
+	currentPane := strings.TrimSpace(os.Getenv("ZELLIJ_PANE_ID"))
+	programs := make([]MultiplexerProgram, 0, len(panes))
+	for _, pane := range panes {
+		if pane.IsPlugin || pane.Exited || strings.TrimSpace(pane.PaneCWD) == "" || isGlintZellijPane(pane) {
+			continue
+		}
+		paneID := normalizeZellijPaneID(strconv.Itoa(pane.ID))
+		baseValues := []string{pane.PaneCommand, pane.Title, pane.TabName, strconv.Itoa(pane.TabID), session}
+		name, ok := identify(baseValues...)
+		if !ok {
+			continue
+		}
+		programs = append(programs, MultiplexerProgram{
+			Path: pane.PaneCWD, MultiplexerId: paneID, ProgramName: name, Session: session,
+			Window: strconv.Itoa(pane.TabID), Current: zellijPaneIDMatches(currentPane, paneID),
+		})
+	}
+	sortPrograms(programs)
+	return programs
+}
+
+func sortPrograms(programs []MultiplexerProgram) {
 	sort.SliceStable(programs, func(i, j int) bool {
 		if programs[i].Session != programs[j].Session {
 			return programs[i].Session < programs[j].Session
@@ -996,5 +1233,153 @@ func TmuxProgramsAll(identify func(...string) (string, bool), descendants func(s
 		}
 		return programs[i].MultiplexerId < programs[j].MultiplexerId
 	})
-	return programs
+}
+
+func zellijPanes() ([]zellijPane, error) {
+	zellijPanesMu.Lock()
+	if time.Since(zellijPanesCacheAt) < 750*time.Millisecond && zellijPanesCache != nil {
+		panes := append([]zellijPane(nil), zellijPanesCache...)
+		zellijPanesMu.Unlock()
+		return panes, nil
+	}
+	zellijPanesMu.Unlock()
+
+	out, err := exec.Command("zellij", "action", "list-panes", "--json", "--all").Output()
+	if err != nil {
+		return nil, err
+	}
+	var panes []zellijPane
+	if err := json.Unmarshal(out, &panes); err != nil {
+		return nil, err
+	}
+
+	zellijPanesMu.Lock()
+	zellijPanesCache = append([]zellijPane(nil), panes...)
+	zellijPanesCacheAt = time.Now()
+	zellijPanesMu.Unlock()
+	return panes, nil
+}
+
+func zellijCurrentSessionName() (string, error) {
+	out, err := exec.Command("zellij", "list-sessions", "--no-formatting").Output()
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if !strings.Contains(line, "(current)") {
+			continue
+		}
+		name := strings.TrimSpace(line)
+		if idx := strings.Index(name, " ["); idx >= 0 {
+			name = strings.TrimSpace(name[:idx])
+		}
+		if name != "" {
+			return name, nil
+		}
+	}
+	return "", fmt.Errorf("no current zellij session found")
+}
+
+func zellijCurrentTabID() (string, error) {
+	currentPane := strings.TrimSpace(os.Getenv("ZELLIJ_PANE_ID"))
+	panes, err := zellijPanes()
+	if err != nil {
+		return "", err
+	}
+	for _, pane := range panes {
+		if !pane.IsPlugin && zellijPaneIDMatches(currentPane, normalizeZellijPaneID(strconv.Itoa(pane.ID))) {
+			return strconv.Itoa(pane.TabID), nil
+		}
+	}
+	for _, pane := range panes {
+		if !pane.IsPlugin && pane.IsFocused {
+			return strconv.Itoa(pane.TabID), nil
+		}
+	}
+	return "", fmt.Errorf("no current zellij tab found")
+}
+
+func zellijFocusedPaneID() (string, error) {
+	panes, err := zellijPanes()
+	if err != nil {
+		return "", err
+	}
+	for _, pane := range panes {
+		if !pane.IsPlugin && pane.IsFocused {
+			return normalizeZellijPaneID(strconv.Itoa(pane.ID)), nil
+		}
+	}
+	return "", fmt.Errorf("no focused zellij pane found")
+}
+
+func zellijCurrentPaneCWD(paneID string) string {
+	panes, err := zellijPanes()
+	if err != nil {
+		return ""
+	}
+	paneID = strings.TrimSpace(paneID)
+	if paneID == "" {
+		paneID = strings.TrimSpace(os.Getenv("ZELLIJ_PANE_ID"))
+	}
+	for _, pane := range panes {
+		if !pane.IsPlugin && zellijPaneIDMatches(paneID, normalizeZellijPaneID(strconv.Itoa(pane.ID))) {
+			return strings.TrimSpace(pane.PaneCWD)
+		}
+	}
+	for _, pane := range panes {
+		if !pane.IsPlugin && pane.IsFocused && strings.TrimSpace(pane.PaneCWD) != "" {
+			return strings.TrimSpace(pane.PaneCWD)
+		}
+	}
+	return ""
+}
+
+func zellijNamedPane(name string) string {
+	panes, err := zellijPanes()
+	if err != nil {
+		return ""
+	}
+	for _, pane := range panes {
+		if pane.IsPlugin || pane.Exited {
+			continue
+		}
+		if strings.TrimSpace(pane.Title) == name {
+			return normalizeZellijPaneID(strconv.Itoa(pane.ID))
+		}
+	}
+	return ""
+}
+
+func normalizeZellijPaneID(id string) string {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return ""
+	}
+	if strings.HasPrefix(id, "terminal_") || strings.HasPrefix(id, "plugin_") {
+		return id
+	}
+	return "terminal_" + id
+}
+
+func zellijPaneIDMatches(left, right string) bool {
+	left = normalizeZellijPaneID(left)
+	right = normalizeZellijPaneID(right)
+	return left != "" && left == right
+}
+
+func isGlintZellijPane(pane zellijPane) bool {
+	title := strings.TrimSpace(pane.Title)
+	command := strings.TrimSpace(pane.PaneCommand)
+	return title == "glint-sidebar" || strings.HasSuffix(title, "-agent") && strings.HasPrefix(title, "zellij-") || strings.Contains(command, "glint sidebar") || strings.Contains(command, "glint pty pane")
+}
+
+func shellPath() string {
+	if shell := strings.TrimSpace(os.Getenv("SHELL")); shell != "" {
+		return shell
+	}
+	return "/bin/sh"
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }

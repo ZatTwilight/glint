@@ -69,8 +69,8 @@ func runOnce() error {
 	mux := multiplexer.Detect()
 	t.lap("multiplexer.Detect")
 
-	programs := multiplexer.TmuxProgramsAll(agent.AgentName, agent.NewLazyDescendantCommands())
-	t.lap(fmt.Sprintf("TmuxProgramsAll (%d)", len(programs)))
+	programs := multiplexer.MultiplexerProgramsAll(agent.AgentName, agent.NewLazyDescendantCommands())
+	t.lap(fmt.Sprintf("MultiplexerProgramsAll (%d)", len(programs)))
 
 	sessionNames := mux.SessionNames()
 	sessionPaths := mux.SessionPaths()

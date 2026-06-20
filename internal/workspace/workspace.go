@@ -52,8 +52,16 @@ func Scan(roots []string, activeSessions map[string]bool, activePaths map[string
 }
 
 func ScanWithPrograms(roots []string, activeSessions map[string]bool, activePaths map[string]bool, programs []multiplexer.MultiplexerProgram) ([]Workspace, error) {
+	return scanWithPrograms(roots, activeSessions, activePaths, programs, true)
+}
+
+func ScanProjectsWithPrograms(roots []string, activeSessions map[string]bool, activePaths map[string]bool, programs []multiplexer.MultiplexerProgram) ([]Workspace, error) {
+	return scanWithPrograms(roots, activeSessions, activePaths, programs, false)
+}
+
+func scanWithPrograms(roots []string, activeSessions map[string]bool, activePaths map[string]bool, programs []multiplexer.MultiplexerProgram, includeAgents bool) ([]Workspace, error) {
 	if programs == nil {
-		programs = multiplexer.TmuxProgramsAll(agent.AgentName, agent.DescendantCommands)
+		programs = multiplexer.MultiplexerProgramsAll(agent.AgentName, agent.DescendantCommands)
 		if programs == nil {
 			programs = []multiplexer.MultiplexerProgram{}
 		}
@@ -62,7 +70,7 @@ func ScanWithPrograms(roots []string, activeSessions map[string]bool, activePath
 	workspaces := []Workspace{}
 
 	for _, root := range roots {
-		rootWorkspaces, err := scanRoot(root, activeSessions, activePaths, programs)
+		rootWorkspaces, err := scanRoot(root, activeSessions, activePaths, programs, includeAgents)
 		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}
@@ -82,7 +90,7 @@ func ScanWithPrograms(roots []string, activeSessions map[string]bool, activePath
 	return workspaces, nil
 }
 
-func scanRoot(root string, activeSessions map[string]bool, activePaths map[string]bool, programs []multiplexer.MultiplexerProgram) ([]Workspace, error) {
+func scanRoot(root string, activeSessions map[string]bool, activePaths map[string]bool, programs []multiplexer.MultiplexerProgram, includeAgents bool) ([]Workspace, error) {
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return nil, err
@@ -144,17 +152,17 @@ func scanRoot(root string, activeSessions map[string]bool, activePaths map[strin
 
 			parent := task.parent
 			if task.isJJDir {
-				results[i] = scanJJWorkspaces(parent, task.repoRoot, activeSessions, activePaths, programs)
+				results[i] = scanJJWorkspaces(parent, task.repoRoot, activeSessions, activePaths, programs, includeAgents)
 				return
 			}
 			if !isGitRepository(parent.Path) {
-				parent.Agents = agent.ScanWorkspaceWithPrograms(parent.Name, parent.Path, programs)
+				parent.Agents = scanAgents(parent.Name, parent.Path, programs, includeAgents)
 				results[i] = []Workspace{parent}
 				return
 			}
 
 			parent.VCS = VCSGit
-			results[i] = scanWorktrees(parent, activeSessions, activePaths, programs)
+			results[i] = scanWorktrees(parent, activeSessions, activePaths, programs, includeAgents)
 		}(i, task)
 	}
 	wg.Wait()
@@ -242,7 +250,14 @@ type JJWorkspaceResp struct {
 	ModTime time.Time
 }
 
-func scanJJWorkspaces(parent Workspace, repoRoot string, activeSessions map[string]bool, activePaths map[string]bool, programs []multiplexer.MultiplexerProgram) []Workspace {
+func scanAgents(name, path string, programs []multiplexer.MultiplexerProgram, includeAgents bool) []agent.Agent {
+	if !includeAgents {
+		return nil
+	}
+	return agent.ScanWorkspaceWithPrograms(name, path, programs)
+}
+
+func scanJJWorkspaces(parent Workspace, repoRoot string, activeSessions map[string]bool, activePaths map[string]bool, programs []multiplexer.MultiplexerProgram, includeAgents bool) []Workspace {
 	out, err := exec.Command("jj", "-R", parent.Path, "--ignore-working-copy", "workspace", "list", "-T", "name ++ \"\\t\" ++ root ++ \"\\n\"").Output()
 	if err != nil {
 		return nil
@@ -281,13 +296,13 @@ func scanJJWorkspaces(parent Workspace, repoRoot string, activeSessions map[stri
 			GitType:      none,
 			VCS:          VCSJujutsu,
 			Branch:       jjws.Name,
-			Agents:       agent.ScanWorkspaceWithPrograms(name, jjws.Path, programs),
+			Agents:       scanAgents(name, jjws.Path, programs, includeAgents),
 		})
 	}
 	return workspaces
 }
 
-func scanWorktrees(parent Workspace, activeSessions map[string]bool, activePaths map[string]bool, programs []multiplexer.MultiplexerProgram) []Workspace {
+func scanWorktrees(parent Workspace, activeSessions map[string]bool, activePaths map[string]bool, programs []multiplexer.MultiplexerProgram, includeAgents bool) []Workspace {
 	out, err := exec.Command("git", "-C", parent.Path, "worktree", "list", "--porcelain").Output()
 	if err != nil {
 		return nil
@@ -357,7 +372,7 @@ func scanWorktrees(parent Workspace, activeSessions map[string]bool, activePaths
 			VCS:          VCSGit,
 			Branch:       wt.Branch,
 			Head:         wt.Head,
-			Agents:       agent.ScanWorkspaceWithPrograms(name, wt.Path, programs),
+			Agents:       scanAgents(name, wt.Path, programs, includeAgents),
 		})
 	}
 
