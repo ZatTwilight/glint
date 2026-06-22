@@ -3,6 +3,7 @@ package ui
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ZatTwilight/glint/internal/agent"
 	"github.com/ZatTwilight/glint/internal/multiplexer"
@@ -79,6 +80,66 @@ func TestSessionNameForNewPathAvoidsMismatchedName(t *testing.T) {
 
 	if got, want := m.sessionNameForNewPath("/tmp/feature", "feature"), "feature-2"; got != want {
 		t.Fatalf("session name = %q, want %q", got, want)
+	}
+}
+
+func TestPaletteIncludesUnscannedMultiplexerSessions(t *testing.T) {
+	m := New(State{
+		Multiplexer: multiplexer.Info{Kind: multiplexer.Tmux, Sessions: []multiplexer.Session{{
+			Name:     "scratch",
+			Path:     "/tmp/scratch",
+			Attached: true,
+			Activity: time.Now(),
+		}}},
+		Palette: MovementPaletteOptions(),
+	}, nil)
+
+	targets := m.paletteTargets()
+	if len(targets) != 1 {
+		t.Fatalf("palette target count = %d, want 1", len(targets))
+	}
+	if got, want := targets[0].Label, "session"; got != want {
+		t.Fatalf("target label = %q, want %q", got, want)
+	}
+	if got, want := targets[0].Title, "scratch"; got != want {
+		t.Fatalf("target title = %q, want %q", got, want)
+	}
+	if got, want := targets[0].Action.Kind, paletteActionSwitchSession; got != want {
+		t.Fatalf("target action = %v, want %v", got, want)
+	}
+}
+
+func TestPaletteDoesNotDuplicateWorkspaceBackedSessions(t *testing.T) {
+	m := New(State{
+		Multiplexer: multiplexer.Info{Kind: multiplexer.Tmux, Sessions: []multiplexer.Session{
+			{Name: "glint", Path: "/tmp/glint"},
+			{Name: "glint-subdir", Path: "/tmp/glint/internal"},
+			{Name: "glint"},
+			{Name: "glint", Path: "/tmp/other"},
+			{Name: multiplexer.ShelfSessionName, Path: "/tmp/shelf"},
+		}},
+		Workspaces: []workspace.Workspace{{Name: "glint", Path: "/tmp/glint"}},
+	}, nil)
+
+	targets := m.paletteTargets()
+	for _, target := range targets {
+		if target.Label == "session" {
+			t.Fatalf("unexpected session target for workspace-backed session: %+v", target)
+		}
+	}
+}
+
+func TestLocalPaletteDoesNotDuplicateSessionForProjectRef(t *testing.T) {
+	m := New(State{
+		Multiplexer: multiplexer.Info{Kind: multiplexer.Tmux, Sessions: []multiplexer.Session{{Name: "feature", Path: "/tmp/repo/feature"}}},
+		Workspaces:  []workspace.Workspace{{Name: "repo", Path: "/tmp/repo", VCS: workspace.VCSGit}},
+		CurrentPath: "/tmp/repo",
+		Palette:     MovementPaletteOptions(),
+	}, nil)
+
+	base := []paletteTarget{{Item: visibleItem{Kind: kindWorkspace, Workspace: workspace.Workspace{Name: "feature", Path: "/tmp/repo/feature"}}}}
+	if targets := m.multiplexerSessionPaletteTargets(m.state.Palette, base); len(targets) != 0 {
+		t.Fatalf("session targets = %+v, want none", targets)
 	}
 }
 

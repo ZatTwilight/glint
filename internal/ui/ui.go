@@ -131,12 +131,14 @@ const (
 	paletteActionShelveMain
 	paletteActionCreateWorktree
 	paletteActionCleanupWorktrees
+	paletteActionSwitchSession
 )
 
 type paletteAction struct {
-	Kind      paletteActionKind
-	Workspace workspace.Workspace
-	Source    vcs.Source
+	Kind        paletteActionKind
+	Workspace   workspace.Workspace
+	Source      vcs.Source
+	SessionName string
 }
 
 type worktreeFlowStep int
@@ -1282,6 +1284,12 @@ func (m Model) paletteTargets() []paletteTarget {
 			targets = append(targets, target)
 		}
 	}
+	for _, target := range m.multiplexerSessionPaletteTargets(options, nil) {
+		if score, ok := paletteTargetScore(query, target); ok {
+			target.Score = score + 30
+			targets = append(targets, target)
+		}
+	}
 	for _, ws := range m.state.Workspaces {
 		if ws.GitType == 1 {
 			continue
@@ -1385,6 +1393,7 @@ var localPaletteBaseCache = map[string][]paletteTarget{}
 
 func (m Model) localPaletteTargets(query string, options PaletteOptions) []paletteTarget {
 	base := m.localPaletteBaseTargets(options)
+	base = append(base, m.multiplexerSessionPaletteTargets(options, base)...)
 	targets := []paletteTarget{}
 	for _, target := range base {
 		if score, ok := paletteTargetScore(query, target); ok {
@@ -1396,6 +1405,87 @@ func (m Model) localPaletteTargets(query string, options PaletteOptions) []palet
 		sort.SliceStable(targets, func(i, j int) bool { return targets[i].Score > targets[j].Score })
 	}
 	return targets
+}
+
+func (m Model) multiplexerSessionPaletteTargets(options PaletteOptions, projectTargets []paletteTarget) []paletteTarget {
+	if !options.IncludeWorkspaces || m.state.Multiplexer.Kind == multiplexer.None {
+		return nil
+	}
+	projects := m.paletteProjectRefs(projectTargets)
+	targets := []paletteTarget{}
+	for _, session := range m.state.Multiplexer.Sessions {
+		name := strings.TrimSpace(session.Name)
+		if name == "" || name == multiplexer.ShelfSessionName {
+			continue
+		}
+		path := strings.TrimSpace(session.Path)
+		if projects.includesSession(name, path) {
+			continue
+		}
+		subtitleParts := []string{string(m.state.Multiplexer.Kind)}
+		if path != "" {
+			subtitleParts = append(subtitleParts, path)
+		}
+		if session.Attached {
+			subtitleParts = append(subtitleParts, "attached")
+		}
+		if !session.Activity.IsZero() {
+			subtitleParts = append(subtitleParts, relativeTime(session.Activity))
+		}
+		targets = append(targets, paletteTarget{
+			Action:   paletteAction{Kind: paletteActionSwitchSession, SessionName: name},
+			Label:    "session",
+			Title:    name,
+			Subtitle: strings.Join(subtitleParts, " · "),
+			Search:   strings.Join([]string{"session multiplexer project workspace switch move", name, path, string(m.state.Multiplexer.Kind)}, " "),
+			Score:    30,
+		})
+	}
+	return targets
+}
+
+type paletteProjectRefs struct {
+	names map[string]bool
+	paths []string
+}
+
+func (m Model) paletteProjectRefs(extraTargets []paletteTarget) paletteProjectRefs {
+	refs := paletteProjectRefs{names: map[string]bool{}}
+	add := func(ws workspace.Workspace) {
+		name := strings.TrimSpace(ws.Name)
+		if name != "" {
+			refs.names[name] = true
+		}
+		path := strings.TrimSpace(ws.Path)
+		if path != "" {
+			refs.paths = append(refs.paths, filepath.Clean(path))
+		}
+	}
+	for _, ws := range m.state.Workspaces {
+		if ws.GitType != 1 {
+			add(ws)
+		}
+	}
+	for _, target := range extraTargets {
+		if target.Item.Kind == kindWorkspace {
+			add(target.Item.Workspace)
+		}
+	}
+	return refs
+}
+
+func (refs paletteProjectRefs) includesSession(sessionName, sessionPath string) bool {
+	name := strings.TrimSpace(sessionName)
+	path := strings.TrimSpace(sessionPath)
+	if path != "" {
+		cleanPath := filepath.Clean(path)
+		for _, projectPath := range refs.paths {
+			if cleanPath == projectPath || strings.HasPrefix(cleanPath, projectPath+string(filepath.Separator)) {
+				return true
+			}
+		}
+	}
+	return refs.names[name]
 }
 
 func (m Model) localPaletteBaseTargets(options PaletteOptions) []paletteTarget {
@@ -2201,6 +2291,8 @@ func (m Model) activatePaletteAction(action paletteAction) (tea.Model, tea.Cmd) 
 		return m.startWorktreeFlow(action.Workspace)
 	case paletteActionCleanupWorktrees:
 		return m.startCleanupFlow(action.Workspace)
+	case paletteActionSwitchSession:
+		return m.switchToSession(action.SessionName)
 	default:
 		m.status = "Unknown palette action"
 		return m, nil
@@ -2491,6 +2583,24 @@ func shellEnvPrefix(keys ...string) string {
 		return ""
 	}
 	return strings.Join(parts, " ") + " "
+}
+
+func (m Model) switchToSession(sessionName string) (tea.Model, tea.Cmd) {
+	sessionName = strings.TrimSpace(sessionName)
+	if sessionName == "" {
+		m.status = "Pick a session"
+		return m, nil
+	}
+	switchSession := multiplexer.SwitchSession
+	if m.state.SidebarMode {
+		switchSession = multiplexer.SwitchSessionWithSidebar
+	}
+	if err := switchSession(m.state.Multiplexer.Kind, sessionName); err != nil {
+		m.status = fmt.Sprintf("Switch failed: %v", err)
+		return m, nil
+	}
+	m.status = fmt.Sprintf("Switched to %s", sessionName)
+	return m, nil
 }
 
 func (m Model) activateWorkspace(selected workspace.Workspace) (tea.Model, tea.Cmd) {
