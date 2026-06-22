@@ -170,7 +170,7 @@ func runApp(sidebarMode bool) {
 	if sidebarMode {
 		_ = multiplexer.MarkCurrentPaneSidebar()
 	}
-	state, refresh := appState(sidebarMode, false)
+	state, refresh := appState(appStateOptions{SidebarMode: sidebarMode})
 	model := ui.New(state, refresh)
 	runProgram(model)
 }
@@ -181,8 +181,7 @@ func runPalette(args []string) {
 		fmt.Fprintf(os.Stderr, "glint palette: %v\n", err)
 		os.Exit(1)
 	}
-	state, refresh := appState(false, true)
-	state.Palette = paletteOptions
+	state, refresh := appState(appStateOptions{UseCache: true, Palette: paletteOptions})
 	model := ui.NewPalette(state, refresh)
 	runProgram(model)
 }
@@ -218,6 +217,13 @@ func parsePaletteOptions(args []string) (ui.PaletteOptions, error) {
 		}
 	}
 	return options, nil
+}
+
+func paletteNeedsAgentData(options ui.PaletteOptions) bool {
+	if options == (ui.PaletteOptions{}) {
+		options = ui.DefaultPaletteOptions()
+	}
+	return options.IncludeAgents
 }
 
 type appStateCache struct {
@@ -277,6 +283,12 @@ func writeAppStateCache(state ui.State) {
 	}
 }
 
+type appStateOptions struct {
+	SidebarMode bool
+	UseCache    bool
+	Palette     ui.PaletteOptions
+}
+
 func appStateCachePath() string {
 	base := strings.TrimSpace(os.Getenv("XDG_RUNTIME_DIR"))
 	if base == "" {
@@ -290,7 +302,11 @@ func appStateCachePath() string {
 	return filepath.Join(base, "glint", "app-state.json")
 }
 
-func appState(sidebarMode bool, useCache bool) (ui.State, ui.RefreshFunc) {
+func appState(options appStateOptions) (ui.State, ui.RefreshFunc) {
+	sidebarMode := options.SidebarMode
+	useCache := options.UseCache
+	paletteOptions := options.Palette
+
 	cfg, err := config.Load()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "load config: %v\n", err)
@@ -307,6 +323,7 @@ func appState(sidebarMode bool, useCache bool) (ui.State, ui.RefreshFunc) {
 		SidebarMode:    sidebarMode,
 		Theme:          appTheme,
 		Spinner:        spinnerName,
+		Palette:        paletteOptions,
 	}
 	cachedInitial := false
 	if useCache {
@@ -316,6 +333,7 @@ func appState(sidebarMode bool, useCache bool) (ui.State, ui.RefreshFunc) {
 			cached.SidebarMode = sidebarMode
 			cached.Theme = appTheme
 			cached.Spinner = spinnerName
+			cached.Palette = paletteOptions
 			initial = cached
 			cachedInitial = true
 		}
@@ -323,27 +341,29 @@ func appState(sidebarMode bool, useCache bool) (ui.State, ui.RefreshFunc) {
 
 	firstRefresh := true
 	refresh := func() (ui.State, error) {
-		fastPaletteRefresh := useCache && firstRefresh
+		fastCachedRefresh := useCache && firstRefresh
+		projectOnlyRefresh := useCache && !paletteNeedsAgentData(paletteOptions)
 		firstRefresh = false
 
 		mux := multiplexer.Detect()
-		if fastPaletteRefresh && cachedInitial {
+		if fastCachedRefresh && cachedInitial {
 			currentSession, _ := mux.CurrentSession()
 			currentPath, _ := os.Getwd()
 			state := initial
 			state.Multiplexer = mux
 			state.CurrentSession = currentSession
 			state.CurrentPath = currentPath
+			state.Palette = paletteOptions
 			return state, nil
 		}
 
 		programs := []multiplexer.MultiplexerProgram{}
-		if !fastPaletteRefresh {
+		if !projectOnlyRefresh {
 			programs = multiplexer.MultiplexerProgramsAll(agent.AgentName, agent.NewLazyDescendantCommands())
 		}
 		var workspaces []workspace.Workspace
 		var err error
-		if fastPaletteRefresh {
+		if projectOnlyRefresh {
 			workspaces, err = workspace.ScanProjectsWithPrograms(cfg.WorkspaceRoots, mux.SessionNames(), mux.SessionPaths(), programs)
 		} else {
 			workspaces, err = workspace.ScanWithPrograms(cfg.WorkspaceRoots, mux.SessionNames(), mux.SessionPaths(), programs)
@@ -353,7 +373,7 @@ func appState(sidebarMode bool, useCache bool) (ui.State, ui.RefreshFunc) {
 		}
 		currentWindow := ""
 		currentSession := ""
-		if fastPaletteRefresh {
+		if projectOnlyRefresh {
 			currentSession, _ = mux.CurrentSession()
 		} else {
 			currentWindow, err = mux.CurrentWindow()
@@ -380,6 +400,7 @@ func appState(sidebarMode bool, useCache bool) (ui.State, ui.RefreshFunc) {
 			SidebarMode:    sidebarMode,
 			Theme:          appTheme,
 			Spinner:        spinnerName,
+			Palette:        paletteOptions,
 		}
 		writeAppStateCache(state)
 		return state, nil
