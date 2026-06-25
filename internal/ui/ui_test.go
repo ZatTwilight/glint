@@ -117,6 +117,23 @@ func TestSessionNameForNewPathAvoidsMismatchedName(t *testing.T) {
 	}
 }
 
+func TestSessionForPathOrNameMatchesExitedZellijSessionByName(t *testing.T) {
+	m := New(State{Multiplexer: multiplexer.Info{Kind: multiplexer.Zellij, Sessions: []multiplexer.Session{
+		{Name: "zlast", Exited: true},
+	}}}, nil)
+
+	session := m.sessionForPathOrName("/tmp/zlast", "zlast")
+	if session == nil {
+		t.Fatal("expected exited named session")
+	}
+	if got, want := session.Name, "zlast"; got != want {
+		t.Fatalf("session = %q, want %q", got, want)
+	}
+	if got, want := m.sessionNameForNewPath("/tmp/zlast", "zlast"), "zlast"; got != want {
+		t.Fatalf("session name = %q, want %q", got, want)
+	}
+}
+
 func TestPaletteIncludesUnscannedMultiplexerSessions(t *testing.T) {
 	m := New(State{
 		Multiplexer: multiplexer.Info{Kind: multiplexer.Tmux, Sessions: []multiplexer.Session{{

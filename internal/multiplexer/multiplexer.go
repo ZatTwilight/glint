@@ -35,6 +35,7 @@ type Session struct {
 	Path     string
 	Windows  int
 	Attached bool
+	Exited   bool
 	Activity time.Time
 }
 
@@ -1089,12 +1090,17 @@ func zellijSessions() []Session {
 	}
 	current := strings.TrimSpace(os.Getenv("ZELLIJ_SESSION_NAME"))
 	currentPath, _ := os.Getwd()
+	return parseZellijSessions(string(out), current, currentPath)
+}
+
+func parseZellijSessions(output, current, currentPath string) []Session {
 	var sessions []Session
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
+		exited := strings.Contains(strings.ToLower(line), "(exited")
 		name := line
 		if idx := strings.Index(name, " ["); idx >= 0 {
 			name = strings.TrimSpace(name[:idx])
@@ -1106,7 +1112,7 @@ func zellijSessions() []Session {
 		if name == "" {
 			continue
 		}
-		session := Session{Name: name, Attached: strings.Contains(line, "(current)") || name == current}
+		session := Session{Name: name, Attached: strings.Contains(line, "(current)") || name == current, Exited: exited}
 		if session.Attached && currentPath != "" {
 			session.Path = currentPath
 		}

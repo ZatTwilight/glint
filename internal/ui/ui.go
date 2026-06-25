@@ -1202,7 +1202,7 @@ func (m Model) sessionNameForNewPath(path, fallback string) string {
 		base = "worktree"
 	}
 	sessions := m.state.Multiplexer.SessionByName()
-	if session, ok := sessions[base]; !ok || filepath.Clean(session.Path) == filepath.Clean(path) {
+	if session, ok := sessions[base]; !ok || filepath.Clean(session.Path) == filepath.Clean(path) || (m.state.Multiplexer.Kind == multiplexer.Zellij && session.Exited) {
 		return base
 	}
 	for i := 2; ; i++ {
@@ -2658,6 +2658,9 @@ func (m Model) sessionForPathOrName(path, name string) *multiplexer.Session {
 	if session, active := sessionNames[name]; active {
 		if strings.TrimSpace(session.Path) == "" {
 			if m.state.Multiplexer.Kind == multiplexer.Zellij {
+				if session.Exited {
+					return &session
+				}
 				if zellijPath := multiplexer.ZellijSessionPath(session.Name); zellijPath != "" && filepath.Clean(zellijPath) == cleanPath {
 					session.Path = zellijPath
 					return &session
