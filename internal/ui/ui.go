@@ -1301,7 +1301,11 @@ func (m Model) paletteTargets() []paletteTarget {
 			targets = append(targets, target)
 		}
 	}
-	for _, ws := range m.state.Workspaces {
+	workspaces := m.state.Workspaces
+	if query == "" {
+		workspaces = m.sessionFirstPaletteWorkspaces(workspaces)
+	}
+	for _, ws := range workspaces {
 		if ws.GitType == 1 {
 			continue
 		}
@@ -1416,6 +1420,40 @@ func (m Model) localPaletteTargets(query string, options PaletteOptions) []palet
 		sort.SliceStable(targets, func(i, j int) bool { return targets[i].Score > targets[j].Score })
 	}
 	return targets
+}
+
+func (m Model) sessionFirstPaletteWorkspaces(workspaces []workspace.Workspace) []workspace.Workspace {
+	ordered := append([]workspace.Workspace(nil), workspaces...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		return m.workspaceHasPaletteSession(ordered[i]) && !m.workspaceHasPaletteSession(ordered[j])
+	})
+	return ordered
+}
+
+func (m Model) workspaceHasPaletteSession(ws workspace.Workspace) bool {
+	name := strings.TrimSpace(ws.Name)
+	path := strings.TrimSpace(ws.Path)
+	cleanPath := ""
+	if path != "" {
+		cleanPath = filepath.Clean(path)
+	}
+	for _, session := range m.state.Multiplexer.Sessions {
+		sessionName := strings.TrimSpace(session.Name)
+		if sessionName == "" || sessionName == multiplexer.ShelfSessionName {
+			continue
+		}
+		sessionPath := strings.TrimSpace(session.Path)
+		if cleanPath != "" && sessionPath != "" {
+			cleanSessionPath := filepath.Clean(sessionPath)
+			if cleanSessionPath == cleanPath || strings.HasPrefix(cleanSessionPath, cleanPath+string(filepath.Separator)) {
+				return true
+			}
+		}
+		if name != "" && sessionName == name {
+			return true
+		}
+	}
+	return false
 }
 
 func (m Model) multiplexerSessionPaletteTargets(options PaletteOptions, projectTargets []paletteTarget) []paletteTarget {

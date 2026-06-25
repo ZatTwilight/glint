@@ -160,6 +160,27 @@ func TestPaletteIncludesUnscannedMultiplexerSessions(t *testing.T) {
 	}
 }
 
+func TestPaletteOrdersSessionBackedWorkspacesFirstWhenUnfiltered(t *testing.T) {
+	m := New(State{
+		Multiplexer: multiplexer.Info{Kind: multiplexer.Tmux, Sessions: []multiplexer.Session{{Name: "bravo", Path: "/tmp/bravo"}}},
+		Workspaces: []workspace.Workspace{
+			{Name: "alpha", Path: "/tmp/alpha"},
+			{Name: "bravo", Path: "/tmp/bravo"},
+			{Name: "charlie", Path: "/tmp/charlie"},
+		},
+	}, nil)
+
+	targets := m.paletteTargets()
+	if len(targets) < 3 {
+		t.Fatalf("palette target count = %d, want at least 3", len(targets))
+	}
+	for idx, want := range []string{"bravo", "alpha", "charlie"} {
+		if got := targets[idx].Title; got != want {
+			t.Fatalf("target %d = %q, want %q", idx, got, want)
+		}
+	}
+}
+
 func TestPaletteDoesNotDuplicateWorkspaceBackedSessions(t *testing.T) {
 	m := New(State{
 		Multiplexer: multiplexer.Info{Kind: multiplexer.Tmux, Sessions: []multiplexer.Session{
