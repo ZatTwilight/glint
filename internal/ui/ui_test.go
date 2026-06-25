@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/ZatTwilight/glint/internal/agent"
 	"github.com/ZatTwilight/glint/internal/multiplexer"
 	"github.com/ZatTwilight/glint/internal/workspace"
@@ -35,6 +36,39 @@ func TestMoveWorkspaceSelectionSkipsAgents(t *testing.T) {
 	m.moveWorkspaceSelection(-1)
 	if got := m.visibleItems()[m.selected].Workspace.Name; got != "bravo" {
 		t.Fatalf("previous project selected %q, want bravo", got)
+	}
+}
+
+func TestOpeningPaletteResetsViewportOffset(t *testing.T) {
+	workspaces := make([]workspace.Workspace, 12)
+	for idx := range workspaces {
+		workspaces[idx] = workspace.Workspace{Name: string(rune('a' + idx)), Path: "/tmp/project" + string(rune('a'+idx))}
+	}
+	m := New(State{Workspaces: workspaces}, nil)
+	m.viewport.SetHeight(4)
+	m.viewport.SetWidth(80)
+	m.viewport.SetYOffset(5)
+
+	model, _ := m.Update(tea.KeyPressMsg(tea.Key{Code: 'p', Mod: tea.ModCtrl}))
+	m = model.(Model)
+
+	if got := m.viewport.YOffset(); got != 0 {
+		t.Fatalf("palette viewport offset = %d, want 0", got)
+	}
+}
+
+func TestStandalonePaletteKeepsPromptVisibleWhenFirstItemSelected(t *testing.T) {
+	m := NewPalette(State{Workspaces: []workspace.Workspace{{Name: "alpha", Path: "/tmp/alpha"}}}, nil)
+	m.viewport.SetHeight(4)
+	m.viewport.SetWidth(80)
+	m.renderContent()
+	m.viewport.SetYOffset(1)
+
+	model, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 10})
+	m = model.(Model)
+
+	if got := m.viewport.YOffset(); got != 0 {
+		t.Fatalf("standalone palette viewport offset = %d, want 0", got)
 	}
 }
 

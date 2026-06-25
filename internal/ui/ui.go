@@ -265,6 +265,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.paletteActive = true
 			m.status = "Command palette"
 			m.selected = 0
+			m.viewport.SetYOffset(0)
 			m.renderContent()
 			m.ensureSelectedVisible()
 			return m, nil
@@ -315,6 +316,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		verticalMarginHeight := headerHeight + footerHeight
 		m.viewport.SetHeight(max(1, msg.Height-verticalMarginHeight))
 		m.renderContent()
+		m.ensureSelectedVisible()
 	case refreshTickMsg:
 		return m, tea.Batch(m.doRefresh(), refreshTick())
 	case animationTickMsg:
@@ -349,6 +351,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	var cmd tea.Cmd
 	m.viewport, cmd = m.viewport.Update(msg)
+	if m.paletteActive {
+		m.ensureSelectedVisible()
+	}
 	return m, cmd
 }
 
@@ -449,6 +454,7 @@ func (m Model) updatePalette(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.paletteFiltering && printableKey(msg.String()) {
 		m.paletteQuery += msg.String()
 		m.selected = 0
+		m.viewport.SetYOffset(0)
 		m.updatePaletteStatus()
 		m.renderContent()
 		m.ensureSelectedVisible()
@@ -482,6 +488,7 @@ func (m Model) updatePalette(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "tab", "h", "l":
 		m.state.Palette.LocalFirst = !m.state.Palette.LocalFirst
 		m.selected = 0
+		m.viewport.SetYOffset(0)
 		m.updatePaletteStatus()
 		m.renderContent()
 		return m, nil
@@ -495,6 +502,7 @@ func (m Model) updatePalette(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "home":
 		m.selected = 0
+		m.viewport.SetYOffset(0)
 		m.renderContent()
 		m.ensureSelectedVisible()
 		return m, nil
@@ -513,6 +521,7 @@ func (m Model) updatePalette(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.paletteQuery = dropLastRune(m.paletteQuery)
 		m.selected = 0
+		m.viewport.SetYOffset(0)
 		m.updatePaletteStatus()
 		m.renderContent()
 		m.ensureSelectedVisible()
@@ -521,6 +530,7 @@ func (m Model) updatePalette(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.paletteFiltering = true
 		m.paletteQuery = ""
 		m.selected = 0
+		m.viewport.SetYOffset(0)
 		m.updatePaletteStatus()
 		m.renderContent()
 		m.ensureSelectedVisible()
@@ -531,6 +541,7 @@ func (m Model) updatePalette(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.paletteQuery += " "
 		m.selected = 0
+		m.viewport.SetYOffset(0)
 		m.updatePaletteStatus()
 		m.renderContent()
 		m.ensureSelectedVisible()
@@ -2151,6 +2162,10 @@ func (m Model) visibleWorkspaceIndex(path string) int {
 
 func (m *Model) ensureSelectedVisible() {
 	if m.selected < 0 || m.selected >= len(m.spans) {
+		return
+	}
+	if m.paletteActive && m.selected == 0 && m.viewport.YOffset() > 0 {
+		m.viewport.SetYOffset(0)
 		return
 	}
 	span := m.spans[m.selected]
