@@ -184,7 +184,8 @@ func runPalette(args []string) {
 		fmt.Fprintf(os.Stderr, "glint palette: %v\n", err)
 		os.Exit(1)
 	}
-	state, refresh := appState(appStateOptions{UseCache: true, Palette: paletteOptions})
+	useCache := paletteNeedsAgentData(paletteOptions)
+	state, refresh := appState(appStateOptions{UseCache: useCache, Palette: paletteOptions})
 	model := ui.NewPalette(state, refresh)
 	runProgram(model)
 }
@@ -345,7 +346,7 @@ func appState(options appStateOptions) (ui.State, ui.RefreshFunc) {
 	firstRefresh := true
 	refresh := func() (ui.State, error) {
 		fastCachedRefresh := useCache && firstRefresh
-		projectOnlyRefresh := useCache && !paletteNeedsAgentData(paletteOptions)
+		projectOnlyRefresh := !paletteNeedsAgentData(paletteOptions)
 		firstRefresh = false
 
 		mux := multiplexer.Detect()

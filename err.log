@@ -1,0 +1,30 @@
+Start: 2026-07-02 21:11:32.743349629 +1000 AEST m=+0.000596351
+State: 139.202µs
+refresh Start: 2.326278ms
+	init: 9.879541ms (true)
+	load programs: 9.914032ms
+	load workspaces: 52.119661ms
+	load sessions: 52.155852ms
+	cleanup: 52.166622ms
+	state: 52.172902ms
+
+refresh done: 52.974205ms
+
+	init: 21.888818ms (true)
+	load programs: 21.934658ms
+	load workspaces: 69.845071ms
+	load sessions: 69.875441ms
+	cleanup: 69.887572ms
+	state: 69.894662ms
+
+refresh done: 70.068135ms
+
+	init: 12.28093ms (true)
+	load programs: 12.322371ms
+	load workspaces: 56.35542ms
+	load sessions: 56.403421ms
+	cleanup: 56.419481ms
+	state: 56.428452ms
+
+refresh done: 56.626555ms
+
