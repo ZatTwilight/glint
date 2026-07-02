@@ -2033,7 +2033,14 @@ func (m Model) renderPaletteTarget(target paletteTarget, selected bool) string {
 		prefix = "› "
 		label = target.Label
 	}
-	left := prefix + label + " " + target.Title
+	sessionIndicator := ""
+	if target.Action.Kind == paletteActionSwitchSession || (target.Item.Kind == kindWorkspace && m.workspaceHasPaletteSession(target.Item.Workspace)) {
+		sessionIndicator = "• "
+		if !selected {
+			sessionIndicator = m.styles.Accent.Render("•") + " "
+		}
+	}
+	left := prefix + label + " " + sessionIndicator + target.Title
 	right := target.Subtitle
 	style := m.renderer.styles.Title
 	if selected {
