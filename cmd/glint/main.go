@@ -345,8 +345,10 @@ func appState(options appStateOptions) (ui.State, ui.RefreshFunc) {
 
 	firstRefresh := true
 	refresh := func() (ui.State, error) {
+		started := time.Now()
 		fastCachedRefresh := useCache && firstRefresh
 		projectOnlyRefresh := !paletteNeedsAgentData(paletteOptions)
+		debuglog.Printf("refresh start cache=%t fast_cache=%t project_only=%t\n", useCache, fastCachedRefresh, projectOnlyRefresh)
 		firstRefresh = false
 
 		mux := multiplexer.Detect()
@@ -358,6 +360,7 @@ func appState(options appStateOptions) (ui.State, ui.RefreshFunc) {
 			state.CurrentSession = currentSession
 			state.CurrentPath = currentPath
 			state.Palette = paletteOptions
+			debuglog.Printf("refresh fast-cache done in %s\n", time.Since(started))
 			return state, nil
 		}
 
@@ -365,6 +368,7 @@ func appState(options appStateOptions) (ui.State, ui.RefreshFunc) {
 		if !projectOnlyRefresh {
 			programs = multiplexer.MultiplexerProgramsAll(agent.AgentName, agent.NewLazyDescendantCommands())
 		}
+		debuglog.Printf("refresh programs loaded in %s\n", time.Since(started))
 		var workspaces []workspace.Workspace
 		var err error
 		if projectOnlyRefresh {
@@ -372,6 +376,7 @@ func appState(options appStateOptions) (ui.State, ui.RefreshFunc) {
 		} else {
 			workspaces, err = workspace.ScanWithPrograms(cfg.WorkspaceRoots, mux.SessionNames(), mux.SessionPaths(), programs)
 		}
+		debuglog.Printf("refresh workspaces loaded in %s\n", time.Since(started))
 		if err != nil {
 			return ui.State{}, err
 		}
@@ -407,6 +412,7 @@ func appState(options appStateOptions) (ui.State, ui.RefreshFunc) {
 			Palette:        paletteOptions,
 		}
 		writeAppStateCache(state)
+		debuglog.Printf("refresh done in %s\n", time.Since(started))
 		return state, nil
 	}
 
