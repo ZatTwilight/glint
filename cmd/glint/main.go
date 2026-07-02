@@ -129,15 +129,18 @@ func runPopup(args []string) error {
 
 	switch mux.Kind {
 	case multiplexer.Tmux:
-		cmd := shellQuote(bin) + " palette"
+		var cmd strings.Builder
+		cmd.WriteString(shellQuote(bin))
+		cmd.WriteString(" palette")
 		for _, arg := range args {
-			cmd += " " + shellQuote(arg)
+			cmd.WriteString(" ")
+			cmd.WriteString(shellQuote(arg))
 		}
 		popupArgs := []string{"display-popup", "-E", "-w", "80%", "-h", "60%"}
 		if out, err := exec.Command("tmux", "display-message", "-p", "#{pane_current_path}").Output(); err == nil && strings.TrimSpace(string(out)) != "" {
 			popupArgs = append(popupArgs, "-d", strings.TrimSpace(string(out)))
 		}
-		popupArgs = append(popupArgs, cmd)
+		popupArgs = append(popupArgs, cmd.String())
 		return exec.Command("tmux", popupArgs...).Run()
 	case multiplexer.Zellij:
 		cwd, _ := os.Getwd()
