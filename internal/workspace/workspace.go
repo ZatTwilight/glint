@@ -258,7 +258,9 @@ func scanAgents(name, path string, programs []multiplexer.MultiplexerProgram, in
 }
 
 func scanJJWorkspaces(parent Workspace, repoRoot string, activeSessions map[string]bool, activePaths map[string]bool, programs []multiplexer.MultiplexerProgram, includeAgents bool) []Workspace {
-	out, err := exec.Command("jj", "-R", parent.Path, "--ignore-working-copy", "workspace", "list", "-T", "name ++ \"\\t\" ++ root ++ \"\\n\"").Output()
+	// WorkspaceRef no longer exposes a root template keyword in newer jj
+	// versions. List the names first, then ask jj for each workspace's root.
+	out, err := exec.Command("jj", "-R", parent.Path, "--ignore-working-copy", "workspace", "list", "-T", "name ++ \"\\n\"").Output()
 	if err != nil {
 		return nil
 	}
@@ -266,20 +268,20 @@ func scanJJWorkspaces(parent Workspace, repoRoot string, activeSessions map[stri
 	var response []JJWorkspaceResp
 	scanner := bufio.NewScanner(strings.NewReader(string(out)))
 	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
+		name := strings.TrimSpace(scanner.Text())
+		if name == "" {
 			continue
 		}
-		parts := strings.SplitN(line, "\t", 2)
-		if len(parts) != 2 {
+		rootOut, err := exec.Command("jj", "-R", parent.Path, "--ignore-working-copy", "workspace", "root", "--name", name).Output()
+		if err != nil {
 			continue
 		}
-		path := filepath.Clean(parts[1])
+		path := filepath.Clean(strings.TrimSpace(string(rootOut)))
 		info, err := os.Stat(path)
 		if err != nil || !info.IsDir() {
 			continue
 		}
-		response = append(response, JJWorkspaceResp{Name: parts[0], Path: path, ModTime: info.ModTime()})
+		response = append(response, JJWorkspaceResp{Name: name, Path: path, ModTime: info.ModTime()})
 	}
 
 	workspaces := make([]Workspace, 0, len(response))
